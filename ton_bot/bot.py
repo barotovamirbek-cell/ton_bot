@@ -6,7 +6,7 @@ from typing import Optional, List
 
 import aiohttp
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ParseMode
+from aiogram.enums import ParseMode  # <-- исправлено для v3
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
@@ -159,6 +159,7 @@ async def cmd_start(msg: types.Message):
         "/setaddr <address> - установить адрес для этого чата\n"
         "/monitor_start - включить уведомления о новых транзакциях\n"
         "/monitor_stop - отключить уведомления\n",
+        parse_mode=ParseMode.HTML,
         reply_markup=kb.as_markup(resize_keyboard=True)
     )
 
@@ -173,7 +174,7 @@ async def cmd_setaddr(msg: types.Message):
     mon = get_monitor(msg.chat.id)
     last_lt = mon["last_lt"] if mon else None
     set_monitor(msg.chat.id, addr, last_lt)
-    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>")
+    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>", parse_mode=ParseMode.HTML)
 
 # -------------------------
 # Background poll loop
@@ -208,7 +209,7 @@ async def poll_loop():
                             f"🔔 <b>Новая транзакция</b>\nАдрес: <code>{address}</code>\n"
                             f"{summary}\nFrom: <code>{src}</code>\nTo: <code>{dst}</code>\nLT: {in_msg.get('lt') or tx.get('lt')}"
                         )
-                        await bot.send_message(chat_id, text)
+                        await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
                     if new_items:
                         state["chat_monitors"][chat_id_str]["last_lt"] = new_items[-1].get("in_msg", {}).get("lt") or new_items[-1].get("lt")
                         save_state(state)
