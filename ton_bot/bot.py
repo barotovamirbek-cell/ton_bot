@@ -1,4 +1,6 @@
+# bot.py
 import asyncio
+import os
 import json
 import time
 from typing import Optional, List
@@ -10,22 +12,16 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
 # -------------------------
-# Загрузка конфигурации
+# Переменные окружения
 # -------------------------
-import os
-
-CONFIG_PATH = os.path.join(os.getcwd(), "config.json")
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    CONFIG = json.load(f)
-
-TELEGRAM_TOKEN = CONFIG.get("telegram_token")
-TON_API_KEY = CONFIG.get("ton_api_key", "")
-DEFAULT_ADDRESS = CONFIG.get("address", "").strip()
-POLL_INTERVAL = float(CONFIG.get("poll_interval", 8))
-STORAGE_FILE = CONFIG.get("storage_file", "state.json")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TON_API_KEY = os.getenv("TON_API_KEY", "")
+DEFAULT_ADDRESS = os.getenv("DEFAULT_ADDRESS", "").strip()
+POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
+STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
 
 if not TELEGRAM_TOKEN:
-    raise SystemExit("Укажите TELEGRAM_TOKEN в config.json")
+    raise SystemExit("Укажите TELEGRAM_TOKEN в переменных окружения BotHost")
 
 # -------------------------
 # Persistent storage
@@ -67,9 +63,12 @@ async def get_balance(session: aiohttp.ClientSession, address: str) -> Optional[
     except:
         return None
 
-async def get_transactions(session: aiohttp.ClientSession, address: str, limit: int = 20) -> List[dict]:
+async def get_transactions(session: aiohttp.ClientSession, address: str, limit: int = 20, to_lt: Optional[str] = None) -> List[dict]:
+    params = {"address": address, "limit": limit}
+    if to_lt:
+        params["to_lt"] = to_lt
     try:
-        res = await http_get(session, "getTransactions", {"address": address, "limit": limit})
+        res = await http_get(session, "getTransactions", params)
         return res.get("result", []) if res.get("ok") else []
     except:
         return []
@@ -142,6 +141,7 @@ def clear_monitor(chat_id: int):
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
+# /start
 @dp.message(Command(commands=["start"]))
 async def cmd_start(msg: types.Message):
     kb = ReplyKeyboardBuilder()
@@ -160,6 +160,34 @@ async def cmd_start(msg: types.Message):
         parse_mode=ParseMode.HTML,
         reply_markup=kb.as_markup(resize_keyboard=True)
     )
+
+# /setaddr
+@dp.message(Command(commands=["setaddr"]))
+async def cmd_setaddr(msg: types.Message):
+    parts = msg.text.split()
+    if len(parts) < 2:
+        await msg.answer("Использование: /setaddr <TON address>\nПример: /setaddr EQAbc... ")
+        return
+    addr = parts[1].strip()
+    mon = get_monitor(msg.chat.id)
+    last_lt = mon["last_lt"] if mon else None
+    set_monitor(msg.chat.id, addr, last_lt)
+    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>", parse_mode=ParseMode.HTML)
+
+# /balance
+@dp.message(Command(commands=["balance"]))
+async def cmd_balance(msg: types.Message):
+    mon = get_monitor(msg.chat.id)
+    address = mon["address"] if mon else DEFAULT_ADDRESS
+    if not address:
+        await msg.answer("Адрес не задан. Используйте /setaddr <address> или DEFAULT_ADDRESS")
+        return
+    async with aiohttp.ClientSession() as sess:
+        bal = await get_balance(sess, address)
+    if bal is None:
+        await msg.answer("Не удалось получить баланс.")
+        return
+    await msg.answer(f"Адрес: <code>{address}</code>\nБаланс: <b>{fmt_amount(bal)}</b>\n(nanotons: {bal})", parse_mode=ParseMode.HTML)
 
 # -------------------------
 # Background poll loop
