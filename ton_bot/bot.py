@@ -1,4 +1,4 @@
-# ton_wallet_bot.py
+# bot.py
 import asyncio
 import json
 import time
@@ -8,7 +8,7 @@ from typing import Optional, List
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.client.bot import DefaultBotProperties  # ✅ правильный импорт
+from aiogram.client.bot import DefaultBotProperties
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
@@ -136,11 +136,80 @@ def tx_summary(tx: dict, address: str) -> str:
 # -------------------------
 bot = Bot(
     token=TELEGRAM_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ✅ исправлено
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
 
 # -------------------------
-# Далее вставляешь команды /start, /balance, /transactions и poll_loop
-# dispatcher = dp
-# background loop для мониторинга транзакций тоже можно вставить из твоего оригинального кода
+# Команды бота
+# -------------------------
+@dp.message(Command(commands=["start"]))
+async def cmd_start(msg: types.Message):
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="/balance")
+    kb.button(text="/transactions")
+    kb.button(text="/monitor_start")
+    kb.button(text="/monitor_stop")
+    await msg.answer(
+        "Привет! Я бот для отслеживания баланса и транзакций TON.\n\n"
+        "Доступные команды:\n"
+        "/balance - показать баланс\n"
+        "/transactions [N] - показать последние N транзакций\n"
+        "/setaddr <address> - установить адрес для этого чата\n"
+        "/monitor_start - включить уведомления о новых транзакциях\n"
+        "/monitor_stop - отключить уведомления\n",
+        reply_markup=kb.as_markup(resize_keyboard=True)
+    )
+
+# -------------------------
+# Мониторинг транзакций
+# -------------------------
+async def poll_loop():
+    await bot.wait_until_ready()
+    async with aiohttp.ClientSession() as sess:
+        while True:
+            monitors = dict(state.get("chat_monitors", {}))
+            for chat_id_str, info in monitors.items():
+                chat_id = int(chat_id_str)
+                address = info.get("address") or DEFAULT_ADDRESS
+                last_lt = info.get("last_lt")
+                if not address:
+                    continue
+                try:
+                    txs = await get_transactions(sess, address, limit=20)
+                    if not txs:
+                        continue
+                    newest_lt = txs[0].get("in_msg", {}).get("lt") or txs[0].get("lt")
+                    if not last_lt:
+                        state["chat_monitors"][chat_id_str]["last_lt"] = newest_lt
+                        save_state(state)
+                        continue
+                    new_items = [tx for tx in txs if int(tx.get("in_msg", {}).get("lt") or tx.get("lt") or "0") > int(last_lt)]
+                    new_items.sort(key=lambda t: int((t.get("in_msg", {}).get("lt") or t.get("lt") or "0")))
+                    for tx in new_items:
+                        summary = tx_summary(tx, address)
+                        in_msg = tx.get("in_msg") or {}
+                        src = in_msg.get("source") or "?"
+                        dst = in_msg.get("destination") or "?"
+                        text = (f"🔔 <b>Новая транзакция</b>\nАдрес: <code>{address}</code>\n"
+                                f"{summary}\nFrom: <code>{src}</code>\nTo: <code>{dst}</code>\nLT: {in_msg.get('lt') or tx.get('lt')}")
+                        await bot.send_message(chat_id, text)
+                    if new_items:
+                        newest = new_items[-1]
+                        newest_lt = newest.get("in_msg", {}).get("lt") or newest.get("lt")
+                        state["chat_monitors"][chat_id_str]["last_lt"] = newest_lt
+                        save_state(state)
+                except Exception as e:
+                    print("poll error for", address, e)
+            await asyncio.sleep(POLL_INTERVAL)
+
+# -------------------------
+# Запуск бота
+# -------------------------
+async def main():
+    print("Бот запускается...")
+    asyncio.create_task(poll_loop())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
