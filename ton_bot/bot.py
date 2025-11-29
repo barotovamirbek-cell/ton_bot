@@ -7,6 +7,18 @@ from aiogram.types import Message
 from aiogram.filters import Command
 
 # ==========================
+#   SECURITY FIX — HTML ESCAPE
+# ==========================
+def escape_html(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
+
+# ==========================
 #   CONFIG
 # ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -87,14 +99,16 @@ async def get_transactions(address, limit=10):
             amount = 0
 
             if in_msg:
-                sender = in_msg.get("source", "Unknown")
+                sender = escape_html(in_msg.get("source", "Unknown"))
                 amount = int(in_msg.get("value", 0)) / 1e9
 
             if out_msgs:
-                receiver = out_msgs[0].get("destination", "Unknown")
+                receiver = escape_html(out_msgs[0].get("destination", "Unknown"))
                 amount = int(out_msgs[0].get("value", 0)) / 1e9
 
-            parsed.append(f"LT={lt} | {dt_str} | {sender} → {receiver} | {amount:.6f} TON")
+            parsed.append(
+                f"LT={lt} | {dt_str} | {sender} → {receiver} | {amount:.6f} TON"
+            )
 
         return parsed
 
