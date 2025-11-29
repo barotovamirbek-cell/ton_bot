@@ -9,17 +9,16 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
+from aiogram.client.bot import DefaultBotProperties
 
 # -------------------------
-# Конфиг через переменные среды
+# Конфигурация
 # -------------------------
-import os
-
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TON_API_KEY = os.environ.get("TON_API_KEY", "")
-DEFAULT_ADDRESS = os.environ.get("TON_ADDRESS", "").strip()
-POLL_INTERVAL = float(os.environ.get("POLL_INTERVAL", 8))
-STORAGE_FILE = os.environ.get("STORAGE_FILE", "state.json")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TON_API_KEY = os.getenv("TON_API_KEY", "")
+DEFAULT_ADDRESS = os.getenv("DEFAULT_ADDRESS", "").strip()
+POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
+STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
 
 if not TELEGRAM_TOKEN:
     raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в системных переменных")
@@ -137,15 +136,13 @@ def clear_monitor(chat_id: int):
         save_state(state)
 
 # -------------------------
-# Бот
+# Инициализация бота
 # -------------------------
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# -------------------------
 # /start
-# -------------------------
-@dp.message(Command("start"))
+@dp.message(Command(commands=["start"]))
 async def cmd_start(msg: types.Message):
     kb = ReplyKeyboardBuilder()
     kb.button(text="/balance")
@@ -160,14 +157,11 @@ async def cmd_start(msg: types.Message):
         "/setaddr <address> - установить адрес для этого чата\n"
         "/monitor_start - включить уведомления о новых транзакциях\n"
         "/monitor_stop - отключить уведомления\n",
-        parse_mode=ParseMode.HTML,
         reply_markup=kb.as_markup(resize_keyboard=True)
     )
 
-# -------------------------
 # /setaddr
-# -------------------------
-@dp.message(Command("setaddr"))
+@dp.message(Command(commands=["setaddr"]))
 async def cmd_setaddr(msg: types.Message):
     parts = msg.text.split()
     if len(parts) < 2:
@@ -177,7 +171,57 @@ async def cmd_setaddr(msg: types.Message):
     mon = get_monitor(msg.chat.id)
     last_lt = mon["last_lt"] if mon else None
     set_monitor(msg.chat.id, addr, last_lt)
-    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>", parse_mode=ParseMode.HTML)
+    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>")
+
+# /balance
+@dp.message(Command(commands=["balance"]))
+async def cmd_balance(msg: types.Message):
+    mon = get_monitor(msg.chat.id)
+    if not mon or not mon.get("address"):
+        await msg.answer("Сначала установите адрес через /setaddr")
+        return
+    address = mon["address"]
+    async with aiohttp.ClientSession() as sess:
+        balance = await get_balance(sess, address)
+    if balance is None:
+        await msg.answer(f"Не удалось получить баланс для <code>{address}</code>")
+    else:
+        await msg.answer(f"Баланс для <code>{address}</code>: {fmt_amount(balance)}")
+
+# /transactions
+@dp.message(Command(commands=["transactions"]))
+async def cmd_transactions(msg: types.Message):
+    mon = get_monitor(msg.chat.id)
+    if not mon or not mon.get("address"):
+        await msg.answer("Сначала установите адрес через /setaddr")
+        return
+    address = mon["address"]
+    limit = 10
+    parts = msg.text.split()
+    if len(parts) >= 2 and parts[1].isdigit():
+        limit = int(parts[1])
+    async with aiohttp.ClientSession() as sess:
+        txs = await get_transactions(sess, address, limit=limit)
+    if not txs:
+        await msg.answer(f"Транзакции для <code>{address}</code> не найдены")
+    else:
+        lines = [tx_summary(tx, address) for tx in txs]
+        await msg.answer("\n".join(lines))
+
+# /monitor_start
+@dp.message(Command(commands=["monitor_start"]))
+async def cmd_monitor_start(msg: types.Message):
+    mon = get_monitor(msg.chat.id)
+    if not mon or not mon.get("address"):
+        await msg.answer("Сначала установите адрес через /setaddr")
+        return
+    await msg.answer("Мониторинг транзакций включен для этого чата")
+
+# /monitor_stop
+@dp.message(Command(commands=["monitor_stop"]))
+async def cmd_monitor_stop(msg: types.Message):
+    clear_monitor(msg.chat.id)
+    await msg.answer("Мониторинг транзакций отключен для этого чата")
 
 # -------------------------
 # Background poll loop
@@ -212,7 +256,7 @@ async def poll_loop():
                             f"🔔 <b>Новая транзакция</b>\nАдрес: <code>{address}</code>\n"
                             f"{summary}\nFrom: <code>{src}</code>\nTo: <code>{dst}</code>\nLT: {in_msg.get('lt') or tx.get('lt')}"
                         )
-                        await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
+                        await bot.send_message(chat_id, text)
                     if new_items:
                         state["chat_monitors"][chat_id_str]["last_lt"] = new_items[-1].get("in_msg", {}).get("lt") or new_items[-1].get("lt")
                         save_state(state)
@@ -228,4 +272,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+    import os
     asyncio.run(main())
