@@ -166,7 +166,6 @@ async def cmd_start(msg: types.Message):
 # Мониторинг транзакций
 # -------------------------
 async def poll_loop():
-    await bot.wait_until_ready()
     async with aiohttp.ClientSession() as sess:
         while True:
             monitors = dict(state.get("chat_monitors", {}))
