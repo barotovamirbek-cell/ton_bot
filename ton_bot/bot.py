@@ -57,6 +57,7 @@ HEADERS = {"X-API-Key": TON_API_KEY} if TON_API_KEY else {}
 async def http_get(session: aiohttp.ClientSession, path: str, params: dict = None) -> dict:
     url = f"{TONCENTER_BASE}/{path}"
     async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
+        resp.raise_for_status()
         return await resp.json()
 
 async def get_balance(session: aiohttp.ClientSession, address: str) -> Optional[int]:
