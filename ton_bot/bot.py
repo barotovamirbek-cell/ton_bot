@@ -1,3 +1,4 @@
+# ton_wallet_bot.py
 import asyncio
 import json
 import time
@@ -7,7 +8,7 @@ from typing import Optional, List
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
-from aiogram.client.bot import DefaultBotProperties
+from aiogram.client.bot import DefaultBotProperties  # ✅ правильный импорт
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
@@ -135,12 +136,11 @@ def tx_summary(tx: dict, address: str) -> str:
 # -------------------------
 bot = Bot(
     token=TELEGRAM_TOKEN,
-    default=types.DefaultBotProperties(parse_mode=ParseMode.HTML)
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)  # ✅ исправлено
 )
 dp = Dispatcher()
 
 # -------------------------
-# Далее вставляешь команды /start, /balance, /transactions и мониторинг
-# -------------------------
-# Можно использовать код команд и poll_loop из твоего оригинального bot.py
-# Просто dispatcher у нас dp = Dispatcher()
+# Далее вставляешь команды /start, /balance, /transactions и poll_loop
+# dispatcher = dp
+# background loop для мониторинга транзакций тоже можно вставить из твоего оригинального кода
