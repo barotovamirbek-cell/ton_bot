@@ -1,7 +1,7 @@
-# ton_wallet_bot.py
 import asyncio
 import json
 import time
+import os
 from typing import Optional, List
 
 import aiohttp
@@ -14,7 +14,10 @@ from aiogram.filters import Command
 # -------------------------
 # Загрузка конфигурации
 # -------------------------
-with open("config.json", "r", encoding="utf-8") as f:
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
 TELEGRAM_TOKEN = CONFIG.get("telegram_token")
@@ -136,5 +139,8 @@ bot = Bot(
 )
 dp = Dispatcher()
 
-# --- Остальной код команд /start, /balance, /transactions, /monitor_start/stop
-# оставляем без изменений, только dispatcher должен быть из v3
+# -------------------------
+# Далее вставляешь команды /start, /balance, /transactions и мониторинг
+# -------------------------
+# Можно использовать код команд и poll_loop из твоего оригинального bot.py
+# Просто dispatcher у нас dp = Dispatcher()
