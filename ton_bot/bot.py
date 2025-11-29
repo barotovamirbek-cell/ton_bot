@@ -12,7 +12,10 @@ from aiogram.filters import Command
 # -------------------------
 # Загрузка конфигурации
 # -------------------------
-with open("config.json", "r", encoding="utf-8") as f:
+import os
+
+CONFIG_PATH = os.path.join(os.getcwd(), "config.json")
+with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = json.load(f)
 
 TELEGRAM_TOKEN = CONFIG.get("telegram_token")
