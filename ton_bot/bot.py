@@ -1,8 +1,8 @@
 # bot.py
+import os
 import asyncio
 import json
 import time
-import os
 from typing import Optional, List
 
 import aiohttp
@@ -12,16 +12,19 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
 # -------------------------
-# Настройки через переменные окружения
+# Токен из системной переменной BotHost
 # -------------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TON_API_KEY = os.getenv("TON_API_KEY", "")
-DEFAULT_ADDRESS = os.getenv("DEFAULT_ADDRESS", "").strip()
-POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
-STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
-
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise SystemExit("❌ Укажите TELEGRAM_TOKEN в системных переменных BotHost")
+    raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в системных переменных BotHost")
+
+# -------------------------
+# Настройки
+# -------------------------
+DEFAULT_ADDRESS = ""
+POLL_INTERVAL = 8
+STORAGE_FILE = "state.json"
+TONCENTER_BASE = "https://toncenter.com/api/v2"
 
 # -------------------------
 # Persistent storage
@@ -41,27 +44,20 @@ state = load_state()
 if "chat_monitors" not in state:
     state["chat_monitors"] = {}
 
-# -------------------------
-# HTTP Client для Toncenter
-# -------------------------
-TONCENTER_BASE = "https://toncenter.com/api/v2"
-HEADERS = {"X-API-Key": TON_API_KEY} if TON_API_KEY else {}
+def get_monitor(chat_id: int) -> dict:
+    return state["chat_monitors"].get(str(chat_id))
 
+def set_monitor(chat_id: int, address: str, last_lt: Optional[str]):
+    state["chat_monitors"][str(chat_id)] = {"address": address, "last_lt": last_lt}
+    save_state(state)
+
+# -------------------------
+# HTTP для Toncenter
+# -------------------------
 async def http_get(session: aiohttp.ClientSession, path: str, params: dict = None) -> dict:
     url = f"{TONCENTER_BASE}/{path}"
-    async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
+    async with session.get(url, params=params, timeout=20) as resp:
         return await resp.json()
-
-async def get_balance(session: aiohttp.ClientSession, address: str) -> Optional[int]:
-    try:
-        res = await http_get(session, "getAddressInformation", {"address": address})
-        if res.get("ok"):
-            balance = res.get("result", {}).get("balance")
-            if isinstance(balance, str):
-                return int(balance)
-            return balance
-    except:
-        return None
 
 async def get_transactions(session: aiohttp.ClientSession, address: str, limit: int = 20, to_lt: Optional[str] = None) -> List[dict]:
     params = {"address": address, "limit": limit}
@@ -73,9 +69,6 @@ async def get_transactions(session: aiohttp.ClientSession, address: str, limit: 
     except:
         return []
 
-# -------------------------
-# Утилиты
-# -------------------------
 def nanotons_to_ton(nano: int) -> float:
     return nano / 1_000_000_000.0
 
@@ -93,17 +86,17 @@ def analyze_transaction_for_address(tx: dict, address: str) -> dict:
     in_msg = tx.get("in_msg")
     if in_msg:
         src = in_msg.get("source")
-        dest = in_msg.get("destination")
-        val = int(in_msg.get("value", 0) or 0)
-        if dest and dest.lower() == address.lower():
+        dst = in_msg.get("destination")
+        val = int(in_msg.get("value") or 0)
+        if dst and dst.lower() == address.lower():
             incoming += val
         if src and src.lower() == address.lower():
             outgoing += val
     for m in tx.get("out_msgs") or []:
         src = m.get("source")
-        dest = m.get("destination")
-        val = int(m.get("value", 0) or 0)
-        if dest and dest.lower() == address.lower():
+        dst = m.get("destination")
+        val = int(m.get("value") or 0)
+        if dst and dst.lower() == address.lower():
             incoming += val
         if src and src.lower() == address.lower():
             outgoing += val
@@ -119,21 +112,6 @@ def tx_summary(tx: dict, address: str) -> str:
     dirc = analysis["direction"]
     note = "(body present)" if tx.get("in_msg", {}).get("body") else ""
     return f"LT={lt} | {fmt_time(utime)} | {dirc.upper()} | {fmt_amount(abs(net))} {note}"
-
-# -------------------------
-# Мониторинг чатов
-# -------------------------
-def get_monitor(chat_id: int) -> dict:
-    return state["chat_monitors"].get(str(chat_id))
-
-def set_monitor(chat_id: int, address: str, last_lt: Optional[str]):
-    state["chat_monitors"][str(chat_id)] = {"address": address, "last_lt": last_lt}
-    save_state(state)
-
-def clear_monitor(chat_id: int):
-    if str(chat_id) in state["chat_monitors"]:
-        del state["chat_monitors"][str(chat_id)]
-        save_state(state)
 
 # -------------------------
 # Бот
@@ -166,7 +144,7 @@ async def cmd_start(msg: types.Message):
 async def cmd_setaddr(msg: types.Message):
     parts = msg.text.split()
     if len(parts) < 2:
-        await msg.answer("Использование: /setaddr <TON address>\nПример: /setaddr EQAbc... ")
+        await msg.answer("Использование: /setaddr <TON address>")
         return
     addr = parts[1].strip()
     mon = get_monitor(msg.chat.id)
@@ -197,7 +175,7 @@ async def poll_loop():
                         save_state(state)
                         continue
                     new_items = [tx for tx in txs if int(tx.get("in_msg", {}).get("lt") or tx.get("lt") or 0) > int(last_lt)]
-                    new_items = sorted(new_items, key=lambda t: int((t.get("in_msg", {}).get("lt") or t.get("lt") or 0)))
+                    new_items = sorted(new_items, key=lambda t: int(t.get("in_msg", {}).get("lt") or t.get("lt") or 0))
                     for tx in new_items:
                         summary = tx_summary(tx, address)
                         in_msg = tx.get("in_msg") or {}
