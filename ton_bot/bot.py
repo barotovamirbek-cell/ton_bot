@@ -1,276 +1,236 @@
-# bot.py
 import os
 import asyncio
-import json
-import time
-from typing import Optional, List
-
+from datetime import datetime
 import aiohttp
-from aiogram import Bot, Dispatcher, types
-from aiogram.enums import ParseMode
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
 from aiogram.filters import Command
-from aiogram.client.bot import DefaultBotProperties
 
-# -------------------------
-# Конфигурация
-# -------------------------
+# ==========================
+#   CONFIG
+# ==========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TON_API_KEY = os.getenv("TON_API_KEY", "")
-DEFAULT_ADDRESS = os.getenv("DEFAULT_ADDRESS", "").strip()
-POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
-STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
+TONCENTER_API_KEY = os.getenv("TONCENTER_API_KEY")
 
-if not TELEGRAM_TOKEN:
-    raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в системных переменных")
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher()
 
-# -------------------------
-# Persistent storage
-# -------------------------
-def load_state() -> dict:
+# Храним включение/выключение мониторинга
+monitoring_enabled = {}
+
+# ==========================
+#   TON API — баланс
+# ==========================
+async def get_balance(address):
+    url = f"https://toncenter.com/api/v2/getAddressBalance?address={address}&api_key={TONCENTER_API_KEY}"
     try:
-        with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
 
-def save_state(state: dict):
-    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-state = load_state()
-if "chat_monitors" not in state:
-    state["chat_monitors"] = {}
-
-# -------------------------
-# HTTP Client для Toncenter
-# -------------------------
-TONCENTER_BASE = "https://toncenter.com/api/v2"
-HEADERS = {"X-API-Key": TON_API_KEY} if TON_API_KEY else {}
-
-async def http_get(session: aiohttp.ClientSession, path: str, params: dict = None) -> dict:
-    url = f"{TONCENTER_BASE}/{path}"
-    async with session.get(url, params=params, headers=HEADERS, timeout=20) as resp:
-        return await resp.json()
-
-async def get_balance(session: aiohttp.ClientSession, address: str) -> Optional[int]:
-    try:
-        res = await http_get(session, "getAddressInformation", {"address": address})
-        if res.get("ok"):
-            balance = res.get("result", {}).get("balance")
-            if isinstance(balance, str):
-                return int(balance)
-            return balance
+        balance = int(data.get("result", 0)) / 1e9
+        return balance
     except:
         return None
 
-async def get_transactions(session: aiohttp.ClientSession, address: str, limit: int = 20, to_lt: Optional[str] = None) -> List[dict]:
-    params = {"address": address, "limit": limit}
-    if to_lt:
-        params["to_lt"] = to_lt
+
+# ==========================
+#   TON API — токены (Jettons)
+# ==========================
+async def get_tokens(address):
+    url = f"https://toncenter.com/api/v3/jetton/getBalances?account={address}&api_key={TONCENTER_API_KEY}"
     try:
-        res = await http_get(session, "getTransactions", params)
-        return res.get("result", []) if res.get("ok") else []
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
+
+        out = []
+        for t in data.get("balances", []):
+            jetton = t.get("jetton", {})
+            metadata = jetton.get("metadata", {})
+            name = metadata.get("name", "Unknown")
+            symbol = metadata.get("symbol", "???")
+            decimals = int(metadata.get("decimals", 9))
+            balance = int(t.get("balance", 0)) / (10 ** decimals)
+
+            out.append(f"{name} ({symbol}) — {balance}")
+
+        return out
     except:
-        return []
+        return ["Ошибка получения токенов"]
 
-# -------------------------
-# Утилиты
-# -------------------------
-def nanotons_to_ton(nano: int) -> float:
-    return nano / 1_000_000_000.0
 
-def fmt_amount(nano: int) -> str:
-    return f"{nanotons_to_ton(nano):,.9f} TON".rstrip("0").rstrip(".")
+# ==========================
+#   TON API — транзакции (фикс)
+# ==========================
+async def get_transactions(address, limit=10):
+    url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit={limit}&api_key={TONCENTER_API_KEY}"
 
-def fmt_time(ts: int) -> str:
     try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-    except:
-        return str(ts)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                data = await resp.json()
 
-def analyze_transaction_for_address(tx: dict, address: str) -> dict:
-    incoming = outgoing = 0
-    in_msg = tx.get("in_msg")
-    if in_msg:
-        src = in_msg.get("source")
-        dest = in_msg.get("destination")
-        val = int(in_msg.get("value", 0) or 0)
-        if dest and dest.lower() == address.lower():
-            incoming += val
-        if src and src.lower() == address.lower():
-            outgoing += val
-    for m in tx.get("out_msgs") or []:
-        src = m.get("source")
-        dest = m.get("destination")
-        val = int(m.get("value", 0) or 0)
-        if dest and dest.lower() == address.lower():
-            incoming += val
-        if src and src.lower() == address.lower():
-            outgoing += val
-    net = incoming - outgoing
-    direction = "incoming" if net > 0 else ("outgoing" if net < 0 else "self/none")
-    return {"incoming": incoming, "outgoing": outgoing, "net": net, "direction": direction}
+        txs = data.get("result", [])
+        parsed = []
 
-def tx_summary(tx: dict, address: str) -> str:
-    lt = tx.get("in_msg", {}).get("lt") or tx.get("lt") or ""
-    utime = tx.get("utime") or tx.get("created_at") or int(time.time())
-    analysis = analyze_transaction_for_address(tx, address)
-    net = analysis["net"]
-    dirc = analysis["direction"]
-    note = "(body present)" if tx.get("in_msg", {}).get("body") else ""
-    return f"LT={lt} | {fmt_time(utime)} | {dirc.upper()} | {fmt_amount(abs(net))} {note}"
+        for tx in txs:
+            lt = tx.get("transaction_id", {}).get("lt", "N/A")
+            ts = tx.get("utime", 0)
+            dt_str = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
-# -------------------------
-# Мониторинг чатов
-# -------------------------
-def get_monitor(chat_id: int) -> dict:
-    return state["chat_monitors"].get(str(chat_id))
+            in_msg = tx.get("in_msg")
+            out_msgs = tx.get("out_msgs", [])
 
-def set_monitor(chat_id: int, address: str, last_lt: Optional[str]):
-    state["chat_monitors"][str(chat_id)] = {"address": address, "last_lt": last_lt}
-    save_state(state)
+            sender = "Unknown"
+            receiver = "Unknown"
+            amount = 0
 
-def clear_monitor(chat_id: int):
-    if str(chat_id) in state["chat_monitors"]:
-        del state["chat_monitors"][str(chat_id)]
-        save_state(state)
+            if in_msg:
+                sender = in_msg.get("source", "Unknown")
+                amount = int(in_msg.get("value", 0)) / 1e9
 
-# -------------------------
-# Инициализация бота
-# -------------------------
-bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+            if out_msgs:
+                receiver = out_msgs[0].get("destination", "Unknown")
+                amount = int(out_msgs[0].get("value", 0)) / 1e9
 
-# /start
-@dp.message(Command(commands=["start"]))
-async def cmd_start(msg: types.Message):
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="/balance")
-    kb.button(text="/transactions")
-    kb.button(text="/monitor_start")
-    kb.button(text="/monitor_stop")
+            parsed.append(f"LT={lt} | {dt_str} | {sender} → {receiver} | {amount:.6f} TON")
+
+        return parsed
+
+    except Exception as e:
+        return [f"Ошибка истории: {e}"]
+
+
+# ==========================
+#   /start
+# ==========================
+@dp.message(Command("start"))
+async def cmd_start(msg: Message):
+    monitoring_enabled[msg.from_user.id] = False
+
     await msg.answer(
-        "Привет! Я бот для отслеживания баланса и транзакций TON.\n\n"
-        "Доступные команды:\n"
-        "/balance - показать баланс\n"
-        "/transactions [N] - показать последние N транзакций\n"
-        "/setaddr <address> - установить адрес для этого чата\n"
-        "/monitor_start - включить уведомления о новых транзакциях\n"
-        "/monitor_stop - отключить уведомления\n",
-        reply_markup=kb.as_markup(resize_keyboard=True)
+        "👋 Бот активирован!\n\n"
+        "Команды:\n"
+        "/start — включить бота\n"
+        "/stop — выключить бота\n"
+        "/balance <адрес>\n"
+        "/tokens <адрес>\n"
+        "/history <адрес>\n"
+        "/monitor_on <адрес>\n"
+        "/monitor_off\n"
     )
 
-# /setaddr
-@dp.message(Command(commands=["setaddr"]))
-async def cmd_setaddr(msg: types.Message):
-    parts = msg.text.split()
-    if len(parts) < 2:
-        await msg.answer("Использование: /setaddr <TON address>\nПример: /setaddr EQAbc... ")
-        return
-    addr = parts[1].strip()
-    mon = get_monitor(msg.chat.id)
-    last_lt = mon["last_lt"] if mon else None
-    set_monitor(msg.chat.id, addr, last_lt)
-    await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>")
 
-# /balance
-@dp.message(Command(commands=["balance"]))
-async def cmd_balance(msg: types.Message):
-    mon = get_monitor(msg.chat.id)
-    if not mon or not mon.get("address"):
-        await msg.answer("Сначала установите адрес через /setaddr")
-        return
-    address = mon["address"]
-    async with aiohttp.ClientSession() as sess:
-        balance = await get_balance(sess, address)
+# ==========================
+#   /stop
+# ==========================
+@dp.message(Command("stop"))
+async def cmd_stop(msg: Message):
+    monitoring_enabled[msg.from_user.id] = False
+    await msg.answer("🔴 Бот выключен.")
+
+
+# ==========================
+#   /balance
+# ==========================
+@dp.message(Command("balance"))
+async def cmd_balance(msg: Message):
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Использование: /balance <TON адрес>")
+
+    address = args[1]
+    balance = await get_balance(address)
+
     if balance is None:
-        await msg.answer(f"Не удалось получить баланс для <code>{address}</code>")
-    else:
-        await msg.answer(f"Баланс для <code>{address}</code>: {fmt_amount(balance)}")
+        return await msg.answer("Ошибка получения баланса.")
 
-# /transactions
-@dp.message(Command(commands=["transactions"]))
-async def cmd_transactions(msg: types.Message):
-    mon = get_monitor(msg.chat.id)
-    if not mon or not mon.get("address"):
-        await msg.answer("Сначала установите адрес через /setaddr")
-        return
-    address = mon["address"]
-    limit = 10
-    parts = msg.text.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        limit = int(parts[1])
-    async with aiohttp.ClientSession() as sess:
-        txs = await get_transactions(sess, address, limit=limit)
-    if not txs:
-        await msg.answer(f"Транзакции для <code>{address}</code> не найдены")
-    else:
-        lines = [tx_summary(tx, address) for tx in txs]
-        await msg.answer("\n".join(lines))
+    await msg.answer(f"💰 Баланс: {balance} TON")
 
-# /monitor_start
-@dp.message(Command(commands=["monitor_start"]))
-async def cmd_monitor_start(msg: types.Message):
-    mon = get_monitor(msg.chat.id)
-    if not mon or not mon.get("address"):
-        await msg.answer("Сначала установите адрес через /setaddr")
-        return
-    await msg.answer("Мониторинг транзакций включен для этого чата")
 
-# /monitor_stop
-@dp.message(Command(commands=["monitor_stop"]))
-async def cmd_monitor_stop(msg: types.Message):
-    clear_monitor(msg.chat.id)
-    await msg.answer("Мониторинг транзакций отключен для этого чата")
+# ==========================
+#   /tokens
+# ==========================
+@dp.message(Command("tokens"))
+async def cmd_tokens(msg: Message):
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Использование: /tokens <TON адрес>")
 
-# -------------------------
-# Background poll loop
-# -------------------------
-async def poll_loop():
-    async with aiohttp.ClientSession() as sess:
-        while True:
-            monitors = dict(state.get("chat_monitors", {}))
-            for chat_id_str, info in monitors.items():
-                chat_id = int(chat_id_str)
-                address = info.get("address")
-                last_lt = info.get("last_lt")
-                if not address:
-                    continue
-                try:
-                    txs = await get_transactions(sess, address, limit=20)
-                    if not txs:
-                        continue
-                    newest_lt = txs[0].get("in_msg", {}).get("lt") or txs[0].get("lt")
-                    if not last_lt:
-                        state["chat_monitors"][chat_id_str]["last_lt"] = newest_lt
-                        save_state(state)
-                        continue
-                    new_items = [tx for tx in txs if int(tx.get("in_msg", {}).get("lt") or tx.get("lt") or 0) > int(last_lt)]
-                    new_items = sorted(new_items, key=lambda t: int((t.get("in_msg", {}).get("lt") or t.get("lt") or 0)))
-                    for tx in new_items:
-                        summary = tx_summary(tx, address)
-                        in_msg = tx.get("in_msg") or {}
-                        src = in_msg.get("source") or "?"
-                        dst = in_msg.get("destination") or "?"
-                        text = (
-                            f"🔔 <b>Новая транзакция</b>\nАдрес: <code>{address}</code>\n"
-                            f"{summary}\nFrom: <code>{src}</code>\nTo: <code>{dst}</code>\nLT: {in_msg.get('lt') or tx.get('lt')}"
-                        )
-                        await bot.send_message(chat_id, text)
-                    if new_items:
-                        state["chat_monitors"][chat_id_str]["last_lt"] = new_items[-1].get("in_msg", {}).get("lt") or new_items[-1].get("lt")
-                        save_state(state)
-                except Exception as e:
-                    print("poll error for", address, e)
-            await asyncio.sleep(POLL_INTERVAL)
+    address = args[1]
+    tokens = await get_tokens(address)
 
-# -------------------------
-# Запуск
-# -------------------------
-async def main():
-    asyncio.create_task(poll_loop())
-    await dp.start_polling(bot)
+    await msg.answer("🪙 Токены:\n" + "\n".join(tokens))
 
+
+# ==========================
+#   /history
+# ==========================
+@dp.message(Command("history"))
+async def cmd_history(msg: Message):
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Использование: /history <TON адрес>")
+
+    address = args[1]
+    txs = await get_transactions(address)
+
+    await msg.answer("📜 Последние транзакции:\n\n" + "\n".join(txs))
+
+
+# ==========================
+#   Мониторинг (вкл)
+# ==========================
+@dp.message(Command("monitor_on"))
+async def cmd_monitor_on(msg: Message):
+    args = msg.text.split()
+    if len(args) < 2:
+        return await msg.answer("Использование: /monitor_on <TON адрес>")
+
+    user = msg.from_user.id
+    address = args[1]
+
+    monitoring_enabled[user] = True
+    await msg.answer(f"🟢 Мониторинг включен для:\n{address}")
+
+    asyncio.create_task(monitor_loop(msg, address))
+
+
+# ==========================
+#   Мониторинг (выкл)
+# ==========================
+@dp.message(Command("monitor_off"))
+async def cmd_monitor_off(msg: Message):
+    monitoring_enabled[msg.from_user.id] = False
+    await msg.answer("🔴 Мониторинг отключен.")
+
+
+# ==========================
+#   Основной цикл мониторинга
+# ==========================
+async def monitor_loop(msg: Message, address: str):
+    user = msg.from_user.id
+
+    last_lt = None
+
+    while monitoring_enabled.get(user, False):
+        txs = await get_transactions(address, limit=1)
+
+        if txs and "LT=" in txs[0]:
+            lt_new = txs[0].split(" | ")[0].replace("LT=", "")
+            if last_lt is None:
+                last_lt = lt_new
+
+            elif lt_new != last_lt:
+                last_lt = lt_new
+                await msg.answer("🆕 Новая транзакция:\n" + txs[0])
+
+        await asyncio.sleep(5)
+
+
+# ==========================
+#   RUN
+# ==========================
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(dp.start_polling(bot))
