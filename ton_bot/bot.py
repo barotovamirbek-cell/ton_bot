@@ -1,8 +1,10 @@
 import os
 import asyncio
+import signal
+import sys
 from datetime import datetime
 import aiohttp
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
 
@@ -24,11 +26,41 @@ def escape_html(text: str) -> str:
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TONCENTER_API_KEY = os.getenv("TONCENTER_API_KEY")
 
+if not TELEGRAM_TOKEN:
+    print("❌ ERROR: TELEGRAM_BOT_TOKEN not set!")
+    sys.exit(1)
+
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 # Храним включение/выключение мониторинга
 monitoring_enabled = {}
+monitoring_tasks = {}
+
+# ==========================
+#   GRACEFUL SHUTDOWN
+# ==========================
+async def shutdown():
+    """Корректное завершение работы бота"""
+    print("🛑 Shutting down bot...")
+    
+    # Останавливаем все задачи мониторинга
+    for user_id, task in monitoring_tasks.items():
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    
+    # Закрываем сессию бота
+    await bot.session.close()
+    print("✅ Bot shutdown complete")
+
+def signal_handler():
+    """Обработчик сигналов завершения"""
+    print("📡 Received shutdown signal")
+    asyncio.create_task(shutdown())
 
 # ==========================
 #   TON API — баланс
@@ -38,251 +70,263 @@ async def get_balance(address):
     headers = {"X-API-Key": TONCENTER_API_KEY} if TONCENTER_API_KEY else {}
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(url, headers=headers) as resp:
-                data = await resp.json()
-
-        balance = int(data.get("result", 0)) / 1e9
-        return balance
+                if resp.status == 200:
+                    data = await resp.json()
+                    balance = int(data.get("result", 0)) / 1e9
+                    return balance
+                else:
+                    print(f"Balance API error: HTTP {resp.status}")
+                    return None
+    except asyncio.TimeoutError:
+        print("❌ Balance request timeout")
+        return None
     except Exception as e:
-        print(f"Balance error: {e}")
+        print(f"❌ Balance error: {e}")
         return None
 
 # ==========================
-#   TON API — токены (Jettons) - ИСПРАВЛЕННАЯ ВЕРСИЯ
+#   TON API — токены (Jettons)
 # ==========================
 async def get_tokens(address):
-    url = f"https://toncenter.com/api/v3/jetton/balances?address={address}"
+    url = f"https://toncenter.com/api/v2/jetton/getBalances?address={address}"
     headers = {"X-API-Key": TONCENTER_API_KEY} if TONCENTER_API_KEY else {}
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(url, headers=headers) as resp:
-                data = await resp.json()
-                print(f"Tokens raw response: {data}")  # Для отладки
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"🔍 Tokens raw response: {data}")
 
-        out = []
-        balances = data.get("balances", [])
-        
-        if not balances:
-            return ["Токены не найдены"]
-            
-        for t in balances:
-            try:
-                balance = int(t.get("balance", 0))
-                jetton_info = t.get("jetton", {})
-                
-                # Получаем метаданные
-                metadata = jetton_info.get("metadata", {})
-                name = metadata.get("name", "Unknown")
-                symbol = metadata.get("symbol", "???")
-                decimals = int(jetton_info.get("decimals", 9))
-                
-                # Рассчитываем баланс с правильными decimal
-                formatted_balance = balance / (10 ** decimals)
-                
-                out.append(f"{name} ({symbol}) — {formatted_balance:.6f}")
-            except Exception as e:
-                print(f"Token processing error: {e}")
-                continue
+                    out = []
+                    balances = data.get("result", {}).get("balances", [])
+                    
+                    if not balances:
+                        return ["🚫 Токены не найдены"]
+                        
+                    for t in balances:
+                        try:
+                            balance = int(t.get("balance", 0))
+                            jetton_info = t.get("jetton_info", {})
+                            
+                            name = jetton_info.get("name", "Unknown")
+                            symbol = jetton_info.get("symbol", "???")
+                            decimals = int(jetton_info.get("decimals", 9))
+                            
+                            formatted_balance = balance / (10 ** decimals)
+                            
+                            out.append(f"• {name} ({symbol}) — {formatted_balance:.6f}")
+                        except Exception as e:
+                            print(f"⚠️ Token processing error: {e}")
+                            continue
 
-        return out if out else ["Токены не найдены"]
+                    return out if out else ["🚫 Нет доступных токенов"]
+                else:
+                    return [f"❌ API Error: HTTP {resp.status}"]
+                    
+    except asyncio.TimeoutError:
+        return ["⏰ Таймаут запроса токенов"]
     except Exception as e:
-        print(f"Tokens API error: {e}")
-        return [f"Ошибка получения токенов: {e}"]
+        print(f"❌ Tokens API error: {e}")
+        return [f"❌ Ошибка получения токенов: {str(e)[:100]}"]
 
 # ==========================
-#   TON API — транзакции (ПОЛНОСТЬЮ ПЕРЕПИСАННАЯ ВЕРСИЯ)
+#   TON API — транзакции
 # ==========================
 async def get_transactions(address, limit=10):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit={limit}"
     headers = {"X-API-Key": TONCENTER_API_KEY} if TONCENTER_API_KEY else {}
     
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(url, headers=headers) as resp:
-                data = await resp.json()
-                print(f"Transactions raw response: {data}")  # Для отладки
+                if resp.status == 200:
+                    data = await resp.json()
+                    print(f"🔍 Transactions raw response keys: {data.keys() if isinstance(data, dict) else 'No dict'}")
 
-        txs = data.get("result", [])
-        parsed = []
+                    txs = data.get("result", [])
+                    parsed = []
 
-        if not txs:
-            return ["Транзакции не найдены"]
+                    if not txs:
+                        return ["📭 Транзакции не найдены"]
 
-        for tx in txs:
-            try:
-                # Получаем базовую информацию
-                tx_id = tx.get("transaction_id", {})
-                lt = tx_id.get("lt", "N/A")
-                hash_value = tx_id.get("hash", "N/A")[:8]  # Берем только первые 8 символов хеша
-                ts = tx.get("utime", 0)
-                
-                if ts:
-                    dt_str = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                    for tx in txs:
+                        try:
+                            tx_id = tx.get("transaction_id", {})
+                            lt = tx_id.get("lt", "N/A")
+                            hash_value = tx_id.get("hash", "N/A")[:8]
+                            ts = tx.get("utime", 0)
+                            
+                            if ts:
+                                dt_str = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                            else:
+                                dt_str = "N/A"
+
+                            in_msg = tx.get("in_msg", {})
+                            out_msgs = tx.get("out_msgs", [])
+                            
+                            tx_type = "❓ Unknown"
+                            amount = 0
+                            other_party = "Unknown"
+                            
+                            if in_msg and in_msg.get("source"):
+                                tx_type = "📥 IN"
+                                other_party = escape_html(in_msg.get("source", "Unknown")[:10] + "...")
+                                amount = int(in_msg.get("value", 0)) / 1e9
+                            
+                            elif out_msgs:
+                                tx_type = "📤 OUT"
+                                if out_msgs[0].get("destination"):
+                                    other_party = escape_html(out_msgs[0].get("destination", "Unknown")[:10] + "...")
+                                amount = int(out_msgs[0].get("value", 0)) / 1e9
+                            
+                            parsed.append(
+                                f"{tx_type} | LT:{lt} | {dt_str}\n"
+                                f"👤 {other_party}\n"
+                                f"💰 {amount:.6f} TON\n"
+                                f"🔗 {hash_value}..."
+                            )
+                            
+                        except Exception as e:
+                            print(f"⚠️ Transaction processing error: {e}")
+                            continue
+
+                    return parsed if parsed else ["❌ Не удалось обработать транзакции"]
                 else:
-                    dt_str = "N/A"
-
-                # Обрабатываем входящее сообщение
-                in_msg = tx.get("in_msg", {})
-                out_msgs = tx.get("out_msgs", [])
-                
-                # Определяем тип транзакции и участников
-                tx_type = "❓ Unknown"
-                amount = 0
-                other_party = "Unknown"
-                
-                # Если есть входящее сообщение - это получение средств
-                if in_msg and in_msg.get("source"):
-                    tx_type = "📥 IN"
-                    other_party = escape_html(in_msg.get("source", "Unknown")[:10] + "...")
-                    amount = int(in_msg.get("value", 0)) / 1e9
-                
-                # Если есть исходящие сообщения - это отправка средств
-                elif out_msgs:
-                    tx_type = "📤 OUT"
-                    if out_msgs[0].get("destination"):
-                        other_party = escape_html(out_msgs[0].get("destination", "Unknown")[:10] + "...")
-                    amount = int(out_msgs[0].get("value", 0)) / 1e9
-                
-                # Форматируем запись о транзакции
-                parsed.append(
-                    f"{tx_type} | LT:{lt} | {dt_str}\n"
-                    f"👤 {other_party}\n"
-                    f"💰 {amount:.6f} TON\n"
-                    f"🔗 {hash_value}..."
-                )
-                
-            except Exception as e:
-                print(f"Transaction processing error: {e}")
-                continue
-
-        return parsed if parsed else ["Не удалось обработать транзакции"]
-
+                    return [f"❌ API Error: HTTP {resp.status}"]
+                    
+    except asyncio.TimeoutError:
+        return ["⏰ Таймаут запроса транзакций"]
     except Exception as e:
-        print(f"Transactions API error: {e}")
-        return [f"Ошибка получения истории: {e}"]
+        print(f"❌ Transactions API error: {e}")
+        return [f"❌ Ошибка получения истории: {str(e)[:100]}"]
 
 # ==========================
-#   /start
+#   КОМАНДЫ БОТА
 # ==========================
 @dp.message(Command("start"))
 async def cmd_start(msg: Message):
     monitoring_enabled[msg.from_user.id] = False
-
     await msg.answer(
         "👋 Бот активирован!\n\n"
-        "Команды:\n"
-        "/start — включить бота\n"
+        "📋 Команды:\n"
+        "/start — показать это сообщение\n"
         "/stop — выключить бота\n"
-        "/balance <адрес>\n"
-        "/tokens <адрес>\n"
-        "/history <адрес>\n"
-        "/monitor_on <адрес>\n"
-        "/monitor_off\n"
+        "/balance <адрес> — баланс TON\n"
+        "/tokens <адрес> — список токенов\n"
+        "/history <адрес> — история транзакций\n"
+        "/monitor_on <адрес> — включить мониторинг\n"
+        "/monitor_off — выключить мониторинг\n\n"
+        "💡 Пример: /balance EQABCD123..."
     )
 
-# ==========================
-#   /stop
-# ==========================
 @dp.message(Command("stop"))
 async def cmd_stop(msg: Message):
-    monitoring_enabled[msg.from_user.id] = False
-    await msg.answer("🔴 Бот выключен.")
+    user_id = msg.from_user.id
+    monitoring_enabled[user_id] = False
+    
+    # Отменяем задачу мониторинга если есть
+    if user_id in monitoring_tasks:
+        monitoring_tasks[user_id].cancel()
+        del monitoring_tasks[user_id]
+    
+    await msg.answer("🔴 Мониторинг отключен.")
 
-# ==========================
-#   /balance
-# ==========================
 @dp.message(Command("balance"))
 async def cmd_balance(msg: Message):
     args = msg.text.split()
     if len(args) < 2:
-        return await msg.answer("Использование: /balance <TON адрес>")
+        return await msg.answer("❌ Использование: /balance <TON адрес>\n\nПример: /balance EQABCD123...")
 
     address = args[1]
+    await msg.answer("⏳ Запрашиваю баланс...")
+    
     balance = await get_balance(address)
 
     if balance is None:
-        return await msg.answer("Ошибка получения баланса.")
-
+        return await msg.answer("❌ Ошибка получения баланса. Проверьте адрес.")
+    
     await msg.answer(f"💰 Баланс: {balance:.6f} TON")
 
-# ==========================
-#   /tokens
-# ==========================
 @dp.message(Command("tokens"))
 async def cmd_tokens(msg: Message):
     args = msg.text.split()
     if len(args) < 2:
-        return await msg.answer("Использование: /tokens <TON адрес>")
+        return await msg.answer("❌ Использование: /tokens <TON адрес>")
 
     address = args[1]
+    await msg.answer("⏳ Запрашиваю токены...")
+    
     tokens = await get_tokens(address)
 
     response = "🪙 Токены:\n" + "\n".join(tokens)
-    # Разбиваем длинные сообщения
     if len(response) > 4000:
         response = response[:4000] + "..."
     
     await msg.answer(response)
 
-# ==========================
-#   /history
-# ==========================
 @dp.message(Command("history"))
 async def cmd_history(msg: Message):
     args = msg.text.split()
     if len(args) < 2:
-        return await msg.answer("Использование: /history <TON адрес>")
+        return await msg.answer("❌ Использование: /history <TON адрес>")
 
     address = args[1]
+    await msg.answer("⏳ Запрашиваю историю...")
+    
     txs = await get_transactions(address)
 
     response = "📜 Последние транзакции:\n\n" + "\n\n".join(txs)
-    # Разбиваем длинные сообщения
     if len(response) > 4000:
         response = response[:4000] + "..."
     
     await msg.answer(response)
 
-# ==========================
-#   Мониторинг (вкл)
-# ==========================
 @dp.message(Command("monitor_on"))
 async def cmd_monitor_on(msg: Message):
     args = msg.text.split()
     if len(args) < 2:
-        return await msg.answer("Использование: /monitor_on <TON адрес>")
+        return await msg.answer("❌ Использование: /monitor_on <TON адрес>")
 
-    user = msg.from_user.id
+    user_id = msg.from_user.id
     address = args[1]
 
-    monitoring_enabled[user] = True
-    await msg.answer(f"🟢 Мониторинг включен для:\n{address}")
+    # Останавливаем предыдущий мониторинг если был
+    if user_id in monitoring_tasks:
+        monitoring_tasks[user_id].cancel()
+    
+    monitoring_enabled[user_id] = True
+    task = asyncio.create_task(monitor_loop(msg, address))
+    monitoring_tasks[user_id] = task
+    
+    await msg.answer(f"🟢 Мониторинг включен для:\n`{address}`\n\n⏰ Проверка каждые 10 секунд")
 
-    asyncio.create_task(monitor_loop(msg, address))
-
-# ==========================
-#   Мониторинг (выкл)
-# ==========================
 @dp.message(Command("monitor_off"))
 async def cmd_monitor_off(msg: Message):
-    monitoring_enabled[msg.from_user.id] = False
+    user_id = msg.from_user.id
+    monitoring_enabled[user_id] = False
+    
+    if user_id in monitoring_tasks:
+        monitoring_tasks[user_id].cancel()
+        del monitoring_tasks[user_id]
+    
     await msg.answer("🔴 Мониторинг отключен.")
 
 # ==========================
-#   Основной цикл мониторинга
+#   МОНИТОРИНГ
 # ==========================
 async def monitor_loop(msg: Message, address: str):
-    user = msg.from_user.id
+    user_id = msg.from_user.id
     last_lt = None
+    error_count = 0
 
-    while monitoring_enabled.get(user, False):
+    while monitoring_enabled.get(user_id, False) and error_count < 5:
         try:
             txs = await get_transactions(address, limit=1)
 
             if txs and "LT:" in txs[0]:
-                # Извлекаем LT из нового формата
                 for line in txs[0].split('\n'):
                     if "LT:" in line:
                         lt_new = line.split("LT:")[1].split(" | ")[0].strip()
@@ -291,17 +335,53 @@ async def monitor_loop(msg: Message, address: str):
                     lt_new = None
                 
                 if lt_new and lt_new != last_lt:
-                    if last_lt is not None:  # Не отправляем уведомление при первом запуске
+                    if last_lt is not None:
                         await msg.answer("🆕 Новая транзакция:\n" + txs[0])
                     last_lt = lt_new
+                    error_count = 0  # Сбрасываем счетчик ошибок при успехе
+            else:
+                error_count += 1
 
-            await asyncio.sleep(10)  # Увеличил интервал до 10 секунд
+            await asyncio.sleep(10)
+            
+        except asyncio.CancelledError:
+            break
         except Exception as e:
-            print(f"Monitor loop error: {e}")
+            print(f"❌ Monitor loop error: {e}")
+            error_count += 1
             await asyncio.sleep(10)
 
+    if error_count >= 5:
+        await msg.answer("🔴 Мониторинг остановлен из-за множественных ошибок")
+
 # ==========================
-#   RUN
+#   ЗАПУСК БОТА
 # ==========================
+async def main():
+    print("🤖 Starting Telegram Bot...")
+    print(f"🔑 Bot token: {'✅ Set' if TELEGRAM_TOKEN else '❌ Missing'}")
+    print(f"🔑 TON API key: {'✅ Set' if TONCENTER_API_KEY else '⚠️  Missing (rate limits)'}")
+    
+    # Регистрируем обработчики сигналов
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in [signal.SIGTERM, signal.SIGINT]:
+            loop.add_signal_handler(sig, signal_handler)
+    except NotImplementedError:
+        # На Windows signal handlers работают иначе
+        pass
+
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        print(f"❌ Bot error: {e}")
+    finally:
+        await shutdown()
+
 if __name__ == "__main__":
-    asyncio.run(dp.start_polling(bot))
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Bot stopped by user")
+    except Exception as e:
+        print(f"💥 Fatal error: {e}")
