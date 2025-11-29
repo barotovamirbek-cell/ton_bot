@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 # ------------------------
 # Конфигурация
 # ------------------------
-TOKEN = "ВАШ_ТОКЕН_ТЕЛЕГРАМ"  # вставь токен сюда
+TOKEN = "8454402175:AAFzsZAiv5vAAIJalByXXVxi8Wf2WDMGvZI"  # вставь токен сюда
 TON_API_KEY = ""  # если есть ключ TonCenter
 POLL_INTERVAL = 8.0
 STORAGE_FILE = "state.json"
