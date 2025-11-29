@@ -3,7 +3,7 @@ import time
 import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ParseMode
+from aiogram.enums import ParseMode
 
 # ------------------- Вставь свои данные сюда -------------------
 TELEGRAM_TOKEN = "8454402175:AAFzsZAiv5vAAIJalByXXVxi8Wf2WDMGvZI"
