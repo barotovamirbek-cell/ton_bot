@@ -7,6 +7,8 @@ import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 
 # ==========================
 #   SECURITY FIX — HTML ESCAPE
@@ -30,7 +32,11 @@ if not TELEGRAM_TOKEN:
     print("❌ ERROR: TELEGRAM_BOT_TOKEN not set!")
     sys.exit(1)
 
-bot = Bot(token=TELEGRAM_TOKEN)
+# Явно настраиваем бота для polling
+bot = Bot(
+    token=TELEGRAM_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 
 # Храним включение/выключение мониторинга
@@ -56,11 +62,6 @@ async def shutdown():
     # Закрываем сессию бота
     await bot.session.close()
     print("✅ Bot shutdown complete")
-
-def signal_handler():
-    """Обработчик сигналов завершения"""
-    print("📡 Received shutdown signal")
-    asyncio.create_task(shutdown())
 
 # ==========================
 #   TON API — баланс
@@ -144,7 +145,7 @@ async def get_transactions(address, limit=10):
             async with session.get(url, headers=headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    print(f"🔍 Transactions raw response keys: {data.keys() if isinstance(data, dict) else 'No dict'}")
+                    print(f"🔍 Transactions response count: {len(data.get('result', []))}")
 
                     txs = data.get("result", [])
                     parsed = []
@@ -213,7 +214,7 @@ async def cmd_start(msg: Message):
         "👋 Бот активирован!\n\n"
         "📋 Команды:\n"
         "/start — показать это сообщение\n"
-        "/stop — выключить бота\n"
+        "/stop — выключить мониторинг\n"
         "/balance <адрес> — баланс TON\n"
         "/tokens <адрес> — список токенов\n"
         "/history <адрес> — история транзакций\n"
@@ -227,7 +228,6 @@ async def cmd_stop(msg: Message):
     user_id = msg.from_user.id
     monitoring_enabled[user_id] = False
     
-    # Отменяем задачу мониторинга если есть
     if user_id in monitoring_tasks:
         monitoring_tasks[user_id].cancel()
         del monitoring_tasks[user_id]
@@ -241,7 +241,6 @@ async def cmd_balance(msg: Message):
         return await msg.answer("❌ Использование: /balance <TON адрес>\n\nПример: /balance EQABCD123...")
 
     address = args[1]
-    await msg.answer("⏳ Запрашиваю баланс...")
     
     balance = await get_balance(address)
 
@@ -257,7 +256,6 @@ async def cmd_tokens(msg: Message):
         return await msg.answer("❌ Использование: /tokens <TON адрес>")
 
     address = args[1]
-    await msg.answer("⏳ Запрашиваю токены...")
     
     tokens = await get_tokens(address)
 
@@ -274,7 +272,6 @@ async def cmd_history(msg: Message):
         return await msg.answer("❌ Использование: /history <TON адрес>")
 
     address = args[1]
-    await msg.answer("⏳ Запрашиваю историю...")
     
     txs = await get_transactions(address)
 
@@ -338,7 +335,7 @@ async def monitor_loop(msg: Message, address: str):
                     if last_lt is not None:
                         await msg.answer("🆕 Новая транзакция:\n" + txs[0])
                     last_lt = lt_new
-                    error_count = 0  # Сбрасываем счетчик ошибок при успехе
+                    error_count = 0
             else:
                 error_count += 1
 
@@ -362,17 +359,9 @@ async def main():
     print(f"🔑 Bot token: {'✅ Set' if TELEGRAM_TOKEN else '❌ Missing'}")
     print(f"🔑 TON API key: {'✅ Set' if TONCENTER_API_KEY else '⚠️  Missing (rate limits)'}")
     
-    # Регистрируем обработчики сигналов
     try:
-        loop = asyncio.get_running_loop()
-        for sig in [signal.SIGTERM, signal.SIGINT]:
-            loop.add_signal_handler(sig, signal_handler)
-    except NotImplementedError:
-        # На Windows signal handlers работают иначе
-        pass
-
-    try:
-        await dp.start_polling(bot)
+        # Явно используем polling и отключаем вебхуки
+        await dp.start_polling(bot, skip_updates=True)
     except Exception as e:
         print(f"❌ Bot error: {e}")
     finally:
