@@ -1,8 +1,8 @@
 # bot.py
 import asyncio
-import os
 import json
 import time
+import os
 from typing import Optional, List
 
 import aiohttp
@@ -12,7 +12,7 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
 
 # -------------------------
-# Переменные окружения
+# Настройки через переменные окружения
 # -------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TON_API_KEY = os.getenv("TON_API_KEY", "")
@@ -21,7 +21,7 @@ POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
 STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
 
 if not TELEGRAM_TOKEN:
-    raise SystemExit("Укажите TELEGRAM_TOKEN в переменных окружения BotHost")
+    raise SystemExit("❌ Укажите TELEGRAM_TOKEN в системных переменных BotHost")
 
 # -------------------------
 # Persistent storage
@@ -173,21 +173,6 @@ async def cmd_setaddr(msg: types.Message):
     last_lt = mon["last_lt"] if mon else None
     set_monitor(msg.chat.id, addr, last_lt)
     await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>", parse_mode=ParseMode.HTML)
-
-# /balance
-@dp.message(Command(commands=["balance"]))
-async def cmd_balance(msg: types.Message):
-    mon = get_monitor(msg.chat.id)
-    address = mon["address"] if mon else DEFAULT_ADDRESS
-    if not address:
-        await msg.answer("Адрес не задан. Используйте /setaddr <address> или DEFAULT_ADDRESS")
-        return
-    async with aiohttp.ClientSession() as sess:
-        bal = await get_balance(sess, address)
-    if bal is None:
-        await msg.answer("Не удалось получить баланс.")
-        return
-    await msg.answer(f"Адрес: <code>{address}</code>\nБаланс: <b>{fmt_amount(bal)}</b>\n(nanotons: {bal})", parse_mode=ParseMode.HTML)
 
 # -------------------------
 # Background poll loop
