@@ -10,19 +10,22 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from aiogram.filters import Command
-from aiogram.utils.markdown import escape_html
+from aiogram.utils.text import escape_html  # <-- правильный импорт для aiogram 3.x
 
 # -------------------------
-# Конфигурация
+# Загрузка токена из переменной окружения
 # -------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_TOKEN:
-    raise SystemExit("Укажите TELEGRAM_BOT_TOKEN как системную переменную")
+    raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в системных переменных")
 
-TON_API_KEY = os.getenv("TON_API_KEY", "")  # Если есть, можно указать через env
-DEFAULT_ADDRESS = os.getenv("DEFAULT_ADDRESS", "").strip()
+# -------------------------
+# Настройки
+# -------------------------
+TON_API_KEY = os.getenv("TON_API_KEY", "")
+DEFAULT_ADDRESS = os.getenv("TON_ADDRESS", "")
 POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", 8))
-STORAGE_FILE = os.getenv("STORAGE_FILE", "state.json")
+STORAGE_FILE = "state.json"
 
 # -------------------------
 # Persistent storage
@@ -167,7 +170,7 @@ async def cmd_start(msg: types.Message):
 async def cmd_setaddr(msg: types.Message):
     parts = msg.text.split()
     if len(parts) < 2:
-        await msg.answer("Использование: /setaddr <TON address>\nПример: /setaddr EQAbc... ")
+        await msg.answer("Использование: /setaddr <TON address>\nПример: /setaddr EQAbc...")
         return
     addr = parts[1].strip()
     mon = get_monitor(msg.chat.id)
@@ -205,12 +208,8 @@ async def poll_loop():
                         src = in_msg.get("source") or "?"
                         dst = in_msg.get("destination") or "?"
                         text = (
-                            f"🔔 <b>Новая транзакция</b>\n"
-                            f"Адрес: <code>{escape_html(address)}</code>\n"
-                            f"{escape_html(summary)}\n"
-                            f"From: <code>{escape_html(src)}</code>\n"
-                            f"To: <code>{escape_html(dst)}</code>\n"
-                            f"LT: {escape_html(str(in_msg.get('lt') or tx.get('lt')))}"
+                            f"🔔 <b>Новая транзакция</b>\nАдрес: <code>{escape_html(address)}</code>\n"
+                            f"{summary}\nFrom: <code>{escape_html(src)}</code>\nTo: <code>{escape_html(dst)}</code>\nLT: {in_msg.get('lt') or tx.get('lt')}"
                         )
                         await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
                     if new_items:
