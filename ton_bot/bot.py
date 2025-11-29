@@ -6,9 +6,9 @@ from aiogram.filters import Command
 from aiogram.types import ParseMode
 
 # ------------------- Вставь свои данные сюда -------------------
-TELEGRAM_TOKEN = 8454402175:AAFzsZAiv5vAAIJalByXXVxi8Wf2WDMGvZI
+TELEGRAM_TOKEN = "8454402175:AAFzsZAiv5vAAIJalByXXVxi8Wf2WDMGvZI"
 TON_API_KEY = 
-DEFAULT_ADDRESS = UQDBu4MwbignVmSAd9Io5o99Db9d5d9jF9nNFj8Zsik7XKgF
+DEFAULT_ADDRESS = "UQDBu4MwbignVmSAd9Io5o99Db9d5d9jF9nNFj8Zsik7XKgF"
 POLL_INTERVAL = 8  # интервал проверки в секундах
 # --------------------------------------------------------------
 
