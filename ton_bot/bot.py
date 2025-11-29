@@ -151,7 +151,7 @@ async def cmd_start(msg: types.Message):
     kb.button(text="/transactions")
     kb.button(text="/monitor_start")
     kb.button(text="/monitor_stop")
-    await msg.answer(
+await msg.answer(f"Адрес для этого чата установлен: <code>{addr}</code>")
         "Привет! Я бот для отслеживания баланса и транзакций TON.\n\n"
         "Доступные команды:\n"
         "/balance - показать баланс\n"
