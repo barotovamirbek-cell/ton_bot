@@ -171,7 +171,7 @@ def show_transactions(message):
         text = "Транзакции не найдены"
     bot.send_message(chat_id, text)
 
-# Мониторинг транзакций
+# Мониторинг транзакций с токенами
 def monitor_wallets():
     while True:
         for chat_id, info in users.items():
@@ -182,12 +182,39 @@ def monitor_wallets():
                 txs = get_transactions(wallet)
                 if txs:
                     last_hash = info.get("last_hash")
-                    if txs[0]["hash"] != last_hash:
-                        info["last_hash"] = txs[0]["hash"]
-                        info["history"].insert(0, txs[0])
+                    new_txs = []
+                    for tx in txs:
+                        if tx["hash"] == last_hash:
+                            break
+                        new_txs.append(tx)
+
+                    if new_txs:
+                        info["last_hash"] = new_txs[0]["hash"]
+                        info["history"] = new_txs + info["history"]
                         if info.get("notifications", True):
-                            msg = f"💥 Новая транзакция!\n🔹 From: {txs[0]['from']}\n🔹 To: {txs[0]['to']}\n💰 Amount: {txs[0]['amount']} TON"
-                            bot.send_message(chat_id, msg)
+                            for tx in reversed(new_txs):
+                                msg = f"💥 Новая транзакция!\n"
+                                msg += f"🔹 From: {tx['from']}\n"
+                                msg += f"🔹 To: {tx['to']}\n"
+
+                                # Получаем токены и добавляем в уведомление
+                                resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
+                                if resp_jettons.get("ok") and resp_jettons.get("result"):
+                                    tokens = []
+                                    for j in resp_jettons["result"]:
+                                        name = j.get("name", "Unknown")
+                                        symbol = j.get("symbol", "JET")
+                                        balance_j = j.get("balance")
+                                        decimals = int(j.get("decimals", 0))
+                                        if balance_j is not None and int(balance_j) > 0:
+                                            balance_j = int(balance_j) / (10 ** decimals)
+                                            balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
+                                            tokens.append(f"{name} ({symbol}): {balance_j}")
+                                    if tokens:
+                                        msg += "\n".join([f"Токен: {t.split(':')[0]}\nКоличество: {t.split(':')[1].strip()}" for t in tokens]) + "\n"
+
+                                msg += f"\n💰 Amount: {tx['amount']} TON"
+                                bot.send_message(chat_id, msg)
             except Exception as e:
                 print("Ошибка мониторинга:", e)
         save_users()
