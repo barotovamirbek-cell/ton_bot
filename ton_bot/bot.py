@@ -3,16 +3,18 @@ import asyncio
 import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from dotenv import load_dotenv
 
-# ==== Настройки ====
+# ==== Загрузка переменных окружения ====
+load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
-if not API_TOKEN:
-    raise ValueError("Не задан API_TOKEN в переменных окружения!")
+YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")
 
-YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")  # сюда будет приходить уведомление
+if not API_TOKEN or not YOUR_CHAT_ID:
+    raise ValueError("Не заданы переменные окружения API_TOKEN или YOUR_CHAT_ID")
 
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()  # В aiogram 3.x не передаем bot в конструктор
+dp = Dispatcher()  # В aiogram 3.x не передаем bot
 
 # ==== Состояние ====
 notifications_enabled = True
@@ -76,13 +78,11 @@ async def check_new_transactions():
                     sender = tx.get("in_msg", {}).get("source", "Unknown")
                     tokens_info = get_tokens_from_tx(tx)
                     text = f"📥 Новая транзакция\nОт: {sender}\n{tokens_info}"
-                    if YOUR_CHAT_ID:
-                        await bot.send_message(chat_id=YOUR_CHAT_ID, text=text)
+                    await bot.send_message(chat_id=int(YOUR_CHAT_ID), text=text)
                 last_transactions.add(tx["hash"])
         await asyncio.sleep(15)
 
 # ==== Хендлеры ====
-@dp.message.register(commands=["start"])
 async def start(message: types.Message):
     await message.answer(
         "Привет! Я уведомляю о новых транзакциях TON и токенов.\n"
@@ -90,7 +90,6 @@ async def start(message: types.Message):
         reply_markup=main_keyboard()
     )
 
-@dp.message.register(commands=["setwallet"])
 async def set_wallet(message: types.Message):
     global wallet_address
     args = message.get_args()
@@ -100,7 +99,6 @@ async def set_wallet(message: types.Message):
     wallet_address = args.strip()
     await message.answer(f"Адрес кошелька установлен: {wallet_address}")
 
-@dp.callback_query.register()
 async def callbacks(call: types.CallbackQuery):
     global notifications_enabled
     if not wallet_address:
@@ -125,6 +123,11 @@ async def callbacks(call: types.CallbackQuery):
         notifications_enabled = not notifications_enabled
         state = "включены" if notifications_enabled else "выключены"
         await call.message.answer(f"Уведомления {state}.")
+
+# ==== Регистрация хендлеров ====
+dp.message.register(start, commands=["start"])
+dp.message.register(set_wallet, commands=["setwallet"])
+dp.callback_query.register(callbacks)
 
 # ==== Запуск ====
 async def main():
