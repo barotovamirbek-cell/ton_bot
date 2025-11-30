@@ -1,22 +1,25 @@
 import os
 import asyncio
+import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import requests
 
-API_TOKEN = os.getenv("API_TOKEN")  # берём из переменных окружения
+# ==== Настройки ====
+API_TOKEN = os.getenv("API_TOKEN")
 if not API_TOKEN:
     raise ValueError("Не задан API_TOKEN в переменных окружения!")
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")  # сюда будет приходить уведомление
 
-# Состояние бота
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher()  # В aiogram 3.x не передаем bot в конструктор
+
+# ==== Состояние ====
 notifications_enabled = True
 last_transactions = set()
-wallet_address = None  # адрес по умолчанию
+wallet_address = None
 
-# Кнопки
+# ==== Кнопки ====
 def main_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=2)
     keyboard.add(
@@ -26,7 +29,7 @@ def main_keyboard():
     )
     return keyboard
 
-# Получаем баланс TON и токенов
+# ==== Баланс и токены ====
 def get_balance(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}&api_key=YOUR_TONCENTER_API_KEY"
     resp = requests.get(url).json()
@@ -42,7 +45,7 @@ def get_balance(address):
         return balance, token_info
     return 0, []
 
-# Получаем последние транзакции
+# ==== Транзакции ====
 def get_transactions(address):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit=10&api_key=YOUR_TONCENTER_API_KEY"
     resp = requests.get(url).json()
@@ -50,22 +53,18 @@ def get_transactions(address):
         return resp["result"]["transactions"]
     return []
 
-# Получаем токены из транзакции
 def get_tokens_from_tx(tx):
-    # В TONCenter API токены могут быть в in_msg['decoded'] или 'token_balances'
     tokens_text = ""
     in_msg = tx.get("in_msg", {})
-    # Основная сумма TON
     value = int(in_msg.get("value", 0)) / 1e9
     tokens_text += f"TON: {value}\n"
-    # Проверка токенов
     for token in tx.get("token_balances", []):
         symbol = token.get("symbol") or token.get("name") or "TOKEN"
         amount = int(token.get("balance", 0)) / (10 ** int(token.get("decimals", 9)))
         tokens_text += f"{symbol}: {amount}\n"
     return tokens_text.strip()
 
-# Уведомления о новых транзакциях
+# ==== Уведомления ====
 async def check_new_transactions():
     global last_transactions
     while True:
@@ -77,12 +76,13 @@ async def check_new_transactions():
                     sender = tx.get("in_msg", {}).get("source", "Unknown")
                     tokens_info = get_tokens_from_tx(tx)
                     text = f"📥 Новая транзакция\nОт: {sender}\n{tokens_info}"
-                    await bot.send_message(chat_id=YOUR_CHAT_ID, text=text)
+                    if YOUR_CHAT_ID:
+                        await bot.send_message(chat_id=YOUR_CHAT_ID, text=text)
                 last_transactions.add(tx["hash"])
         await asyncio.sleep(15)
 
-# Команды бота
-@dp.message_handler(commands=["start"])
+# ==== Хендлеры ====
+@dp.message.register(commands=["start"])
 async def start(message: types.Message):
     await message.answer(
         "Привет! Я уведомляю о новых транзакциях TON и токенов.\n"
@@ -90,8 +90,7 @@ async def start(message: types.Message):
         reply_markup=main_keyboard()
     )
 
-# Установка адреса кошелька
-@dp.message_handler(commands=["setwallet"])
+@dp.message.register(commands=["setwallet"])
 async def set_wallet(message: types.Message):
     global wallet_address
     args = message.get_args()
@@ -101,8 +100,7 @@ async def set_wallet(message: types.Message):
     wallet_address = args.strip()
     await message.answer(f"Адрес кошелька установлен: {wallet_address}")
 
-# Обработка кнопок
-@dp.callback_query_handler()
+@dp.callback_query.register()
 async def callbacks(call: types.CallbackQuery):
     global notifications_enabled
     if not wallet_address:
@@ -128,10 +126,10 @@ async def callbacks(call: types.CallbackQuery):
         state = "включены" if notifications_enabled else "выключены"
         await call.message.answer(f"Уведомления {state}.")
 
-# Запуск бота
+# ==== Запуск ====
 async def main():
     asyncio.create_task(check_new_transactions())
-    await dp.start_polling()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
