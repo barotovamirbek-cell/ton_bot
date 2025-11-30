@@ -12,6 +12,13 @@ notify_status = {}
 
 TONCENTER_API = "https://toncenter.com/api/v2"
 
+TOKEN_EMOJI = {
+    "TON": "💎",
+    "USDT": "🟢",
+    "BTC": "🟡",
+    "ETH": "🔵"
+}
+
 def format_amount(amount):
     if amount == int(amount):
         return str(int(amount))
@@ -76,21 +83,24 @@ def main_menu():
 def format_balance(balance):
     msg = ""
     for b in balance:
-        msg += f"🔹 {b['token']}: {format_amount(b['amount'])}\n"
+        emoji = TOKEN_EMOJI.get(b['token'], "⚪")
+        msg += f"{emoji} {b['token']}: {format_amount(b['amount'])}\n"
     return msg
 
 def format_transactions(txs):
     msg = ""
     for i, tx in enumerate(txs, 1):
+        emoji = TOKEN_EMOJI.get(tx['token'], "⚪")
         msg += f"{i}. 📝 Hash: {tx['hash']}\n"
         msg += f"   🔹 From: {tx['from']}\n"
         msg += f"   🔹 To: {tx['to']}\n"
-        msg += f"   Токен: {tx['token']}\n"
+        msg += f"   {emoji} Токен: {tx['token']}\n"
         msg += f"   Количество: {format_amount(tx['amount'])}\n\n"
     return msg
 
 def format_new_tx(tx):
-    return f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\nТокен: {tx['token']}\nКоличество: {format_amount(tx['amount'])}\n"
+    emoji = TOKEN_EMOJI.get(tx['token'], "⚪")
+    return f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\n{emoji} Токен: {tx['token']}\nКоличество: {format_amount(tx['amount'])}\n"
 
 @bot.message_handler(commands=["start"])
 def start(message):
