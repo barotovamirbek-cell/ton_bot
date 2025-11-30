@@ -23,15 +23,17 @@ users = set()  # chat_id пользователей
 
 # ==== Кнопки ====
 def main_keyboard():
-    kb = InlineKeyboardMarkup(row_width=2)
+    kb = InlineKeyboardMarkup()
     kb.add(
-        InlineKeyboardButton("Баланс", callback_data="balance"),
-        InlineKeyboardButton("История", callback_data="history"),
-        InlineKeyboardButton("Вкл/Выкл уведомления", callback_data="toggle_notifications")
+        InlineKeyboardButton(text="Баланс", callback_data="balance"),
+        InlineKeyboardButton(text="История", callback_data="history")
+    )
+    kb.add(
+        InlineKeyboardButton(text="Вкл/Выкл уведомления", callback_data="toggle_notifications")
     )
     return kb
 
-# ==== Функции TON API ====
+# ==== TON API ====
 def get_balance(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}&api_key=YOUR_TONCENTER_API_KEY"
     try:
@@ -88,13 +90,16 @@ async def check_new_transactions():
                         except:
                             pass
                 last_transactions.add(tx["hash"])
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 # ==== Хендлеры ====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     users.add(message.chat.id)
-    await message.answer("Бот активирован. Ты будешь получать уведомления о транзакциях TON.", reply_markup=main_keyboard())
+    await message.answer(
+        "Бот активирован. Ты будешь получать уведомления о транзакциях TON.",
+        reply_markup=main_keyboard()
+    )
 
 @dp.message(Command("setwallet"))
 async def cmd_setwallet(message: types.Message):
