@@ -6,23 +6,28 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 API_TOKEN = os.getenv("API_TOKEN")
+if not API_TOKEN:
+    raise ValueError("Переменная окружения API_TOKEN не задана")
+
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-user_wallets = {}  # user_id -> address
-last_tx = {}       # user_id -> last_tx_hash
+user_wallets = {}  # user_id -> wallet address
+last_tx = {}       # user_id -> last transaction hash
 
-# ---------- Кнопки ----------
+
+# --- Кнопки ---
 def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="💰 Баланс"), KeyboardButton(text="📜 История")],
-            [KeyboardButton(text="🔄 Сменить адрес")],
+            [KeyboardButton("💰 Баланс"), KeyboardButton("📜 История")],
+            [KeyboardButton("🔄 Сменить адрес")],
         ],
         resize_keyboard=True
     )
 
-# ---------- Баланс и токены ----------
+
+# --- Баланс и токены ---
 def get_wallet_info(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}"
     try:
@@ -30,9 +35,18 @@ def get_wallet_info(address):
         if not r.get("ok"):
             return None
         res = r["result"]
-        balance = int(res.get("balance", 0)) / 1e9
+        balance = int(res.get("balance", 0)) / 1e9  # TON
 
         tokens_list = []
+
+        # Стандартные токены
+        for t in res.get("tokens", []):
+            symbol = t.get("name") or t.get("symbol") or "TOKEN"
+            decimals = int(t.get("decimals", 9))
+            amt = int(t.get("balance", 0)) / (10 ** decimals)
+            tokens_list.append(f"{symbol}: {amt}")
+
+        # Jettons
         for t in res.get("jettons", []):
             symbol = t.get("name") or t.get("symbol") or "TOKEN"
             decimals = int(t.get("decimals", 9))
@@ -43,7 +57,8 @@ def get_wallet_info(address):
     except:
         return None
 
-# ---------- История ----------
+
+# --- История транзакций ---
 def get_wallet_transactions(address, limit=5):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit={limit}"
     try:
@@ -54,7 +69,8 @@ def get_wallet_transactions(address, limit=5):
     except:
         return []
 
-# ---------- Форматирование токенов в транзакции ----------
+
+# --- Форматирование токенов в транзакции ---
 def parse_tokens_from_tx(tx):
     lines = []
     in_msg = tx.get("in_msg", {})
@@ -69,7 +85,6 @@ def parse_tokens_from_tx(tx):
         amt = int(token.get("balance", 0)) / (10 ** decimals)
         lines.append(f"{symbol}: {amt}")
 
-    # Берём токены из jettons, если есть
     for jetton in tx.get("jettons", []):
         symbol = jetton.get("name") or jetton.get("symbol") or "TOKEN"
         decimals = int(jetton.get("decimals", 9))
@@ -78,14 +93,16 @@ def parse_tokens_from_tx(tx):
 
     return "\n".join(lines) if lines else "Нет данных"
 
-# ---------- Команды ----------
+
+# --- Команды ---
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def cmd_start(message: types.Message):
     await message.answer(
         "👋 Привет! Отправь TON адрес для отслеживания.\n"
         "Бот будет уведомлять о новых транзакциях и показывать баланс/историю.",
         reply_markup=main_keyboard()
     )
+
 
 @dp.message()
 async def handler(message: types.Message):
@@ -122,7 +139,7 @@ async def handler(message: types.Message):
             txt += f"От: {sender}\n{tokens_info}\n\n"
         return await message.answer(txt.strip())
 
-    # TON адрес
+    # Если это адрес TON
     if text.startswith("UQ") or text.startswith("EQ"):
         user_wallets[uid] = text
         last_tx[uid] = None
@@ -130,7 +147,8 @@ async def handler(message: types.Message):
 
     await message.answer("Не понял. Отправьте TON адрес или используйте кнопки.")
 
-# ---------- Фоновый проверщик новых транзакций ----------
+
+# --- Проверка новых транзакций ---
 async def check_new_transactions():
     while True:
         for uid, wallet in user_wallets.items():
@@ -155,10 +173,12 @@ async def check_new_transactions():
                 pass
         await asyncio.sleep(10)
 
-# ---------- Запуск ----------
+
+# --- Запуск ---
 async def main():
     asyncio.create_task(check_new_transactions())
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
