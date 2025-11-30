@@ -1,145 +1,137 @@
 import os
-import time
-import threading
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import requests
-from telebot import TeleBot, types
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-bot = TeleBot(BOT_TOKEN)
+API_TOKEN = os.getenv("API_TOKEN")  # берём из переменных окружения
+if not API_TOKEN:
+    raise ValueError("Не задан API_TOKEN в переменных окружения!")
 
-TONCENTER_API = "https://toncenter.com/api/v2"
-MIN_AMOUNT = 0.000001  # фильтруем слишком мелкие транзакции
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 
-# Словарь кошельков по chat_id
-wallets = {}
+# Состояние бота
+notifications_enabled = True
+last_transactions = set()
+wallet_address = None  # адрес по умолчанию
 
-# Для отслеживания последних tx для каждого кошелька
-last_tx_hash = {}
+# Кнопки
+def main_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("Баланс", callback_data="balance"),
+        InlineKeyboardButton("История", callback_data="history"),
+        InlineKeyboardButton("Вкл/Выкл уведомления", callback_data="toggle_notifications")
+    )
+    return keyboard
 
-# ====== Работа с API ======
+# Получаем баланс TON и токенов
 def get_balance(address):
-    balances = {}
-    try:
-        resp = requests.get(f"{TONCENTER_API}/getAddressInfo?address={address}", timeout=10)
-        if resp.status_code == 200 and resp.text:
-            data = resp.json()
-            ton = int(data.get("result", {}).get("balance", 0)) / 1e9
-            balances["TON"] = ton
-        else:
-            balances["TON"] = 0
-    except Exception as e:
-        print(f"Ошибка TON: {e}")
-        balances["TON"] = 0
+    url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}&api_key=YOUR_TONCENTER_API_KEY"
+    resp = requests.get(url).json()
+    if resp.get("ok"):
+        result = resp["result"]
+        balance = int(result.get("balance", 0)) / 1e9
+        tokens = result.get("tokens", [])
+        token_info = []
+        for t in tokens:
+            symbol = t.get("name") or t.get("symbol") or "TOKEN"
+            amount = int(t.get("balance", 0)) / (10 ** int(t.get("decimals", 9)))
+            token_info.append(f"{symbol}: {amount}")
+        return balance, token_info
+    return 0, []
 
-    try:
-        resp = requests.get(f"{TONCENTER_API}/getJettons?address={address}", timeout=10)
-        if resp.status_code == 200 and resp.text:
-            data = resp.json()
-            for jet in data.get("result", []):
-                name = jet.get("name", "Unknown")
-                amount = float(jet.get("balance", 0))
-                balances[name] = amount
-    except Exception as e:
-        print(f"Ошибка Jettons: {e}")
-
-    return balances
-
+# Получаем последние транзакции
 def get_transactions(address):
-    tx_list = []
-    try:
-        resp = requests.get(f"{TONCENTER_API}/getTransactions?address={address}&limit=50", timeout=10)
-        if resp.status_code == 200 and resp.text:
-            data = resp.json()
-            for tx in data.get("result", []):
-                amount = int(tx.get("amount", 0)) / 1e9
-                if amount >= MIN_AMOUNT:
-                    tx_list.append({
-                        "hash": tx.get("hash", ""),
-                        "from": tx.get("from", ""),
-                        "to": tx.get("to", ""),
-                        "amount": amount,
-                        "token": "TON"
-                    })
-                for jt in tx.get("jettons", []):
-                    if float(jt.get("amount", 0)) >= MIN_AMOUNT:
-                        tx_list.append({
-                            "hash": tx.get("hash", ""),
-                            "from": tx.get("from", ""),
-                            "to": tx.get("to", ""),
-                            "amount": float(jt.get("amount", 0)),
-                            "token": jt.get("name", "Unknown")
-                        })
-    except Exception as e:
-        print(f"Ошибка транзакций: {e}")
-    return tx_list
+    url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit=10&api_key=YOUR_TONCENTER_API_KEY"
+    resp = requests.get(url).json()
+    if resp.get("ok"):
+        return resp["result"]["transactions"]
+    return []
 
-# ====== Команды бота ======
-@bot.message_handler(commands=["start"])
-def start(message):
-    chat_id = message.chat.id
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    keyboard.add("Показать баланс", "История транзакций", "Установить кошелек")
-    bot.send_message(chat_id, "Привет! Выбери команду:", reply_markup=keyboard)
+# Получаем токены из транзакции
+def get_tokens_from_tx(tx):
+    # В TONCenter API токены могут быть в in_msg['decoded'] или 'token_balances'
+    tokens_text = ""
+    in_msg = tx.get("in_msg", {})
+    # Основная сумма TON
+    value = int(in_msg.get("value", 0)) / 1e9
+    tokens_text += f"TON: {value}\n"
+    # Проверка токенов
+    for token in tx.get("token_balances", []):
+        symbol = token.get("symbol") or token.get("name") or "TOKEN"
+        amount = int(token.get("balance", 0)) / (10 ** int(token.get("decimals", 9)))
+        tokens_text += f"{symbol}: {amount}\n"
+    return tokens_text.strip()
 
-@bot.message_handler(func=lambda m: m.text == "Установить кошелек")
-def set_wallet(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "Отправь адрес кошелька TON:")
-    bot.register_next_step_handler(message, save_wallet)
-
-def save_wallet(message):
-    chat_id = message.chat.id
-    wallets[chat_id] = message.text.strip()
-    last_tx_hash[chat_id] = set()
-    bot.send_message(chat_id, f"Кошелек установлен: {wallets[chat_id]}")
-
-@bot.message_handler(func=lambda m: m.text == "Показать баланс")
-def show_balance(message):
-    chat_id = message.chat.id
-    if chat_id not in wallets:
-        bot.send_message(chat_id, "Сначала установите кошелек!")
-        return
-    address = wallets[chat_id]
-    balances = get_balance(address)
-    text = f"💰 Баланс кошелька {address} 💰\n\n"
-    for token, amount in balances.items():
-        text += f"{token}: {amount}\n"
-    bot.send_message(chat_id, text)
-
-@bot.message_handler(func=lambda m: m.text == "История транзакций")
-def show_transactions(message):
-    chat_id = message.chat.id
-    if chat_id not in wallets:
-        bot.send_message(chat_id, "Сначала установите кошелек!")
-        return
-    address = wallets[chat_id]
-    txs = get_transactions(address)
-    if not txs:
-        bot.send_message(chat_id, "Транзакций нет")
-        return
-    text = ""
-    for i, tx in enumerate(txs, 1):
-        text += f"{i}. 🔹 From: {tx['from']}\n"
-        text += f"   🔹 To: {tx['to']}\n"
-        text += f"   Токен: {tx['token']}\n"
-        text += f"   Количество: {tx['amount']}\n\n"
-    bot.send_message(chat_id, text)
-
-# ====== Уведомления о новых транзакциях ======
-def notify_new_transactions():
+# Уведомления о новых транзакциях
+async def check_new_transactions():
+    global last_transactions
     while True:
-        for chat_id, address in wallets.items():
-            txs = get_transactions(address)
-            for tx in txs:
-                if tx["hash"] not in last_tx_hash.get(chat_id, set()):
-                    last_tx_hash[chat_id].add(tx["hash"])
-                    text = f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\n"
-                    text += f"Токен: {tx['token']}\nКоличество: {tx['amount']}\n💰 Amount: {tx['amount']} {tx['token']}\n"
-                    bot.send_message(chat_id, text)
-        time.sleep(20)  # проверка каждые 20 секунд
+        if wallet_address:
+            txs = get_transactions(wallet_address)
+            new_txs = [tx for tx in txs if tx["hash"] not in last_transactions]
+            for tx in new_txs:
+                if notifications_enabled:
+                    sender = tx.get("in_msg", {}).get("source", "Unknown")
+                    tokens_info = get_tokens_from_tx(tx)
+                    text = f"📥 Новая транзакция\nОт: {sender}\n{tokens_info}"
+                    await bot.send_message(chat_id=YOUR_CHAT_ID, text=text)
+                last_transactions.add(tx["hash"])
+        await asyncio.sleep(15)
 
-# ====== Запуск уведомлений в отдельном потоке ======
-threading.Thread(target=notify_new_transactions, daemon=True).start()
+# Команды бота
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    await message.answer(
+        "Привет! Я уведомляю о новых транзакциях TON и токенов.\n"
+        "Используй /setwallet чтобы установить адрес кошелька.",
+        reply_markup=main_keyboard()
+    )
 
-# ====== Запуск бота ======
-bot.infinity_polling()
+# Установка адреса кошелька
+@dp.message_handler(commands=["setwallet"])
+async def set_wallet(message: types.Message):
+    global wallet_address
+    args = message.get_args()
+    if not args:
+        await message.answer("Используй команду: /setwallet <адрес_кошелька>")
+        return
+    wallet_address = args.strip()
+    await message.answer(f"Адрес кошелька установлен: {wallet_address}")
+
+# Обработка кнопок
+@dp.callback_query_handler()
+async def callbacks(call: types.CallbackQuery):
+    global notifications_enabled
+    if not wallet_address:
+        await call.message.answer("Сначала установите адрес кошелька командой /setwallet")
+        return
+
+    if call.data == "balance":
+        balance, tokens = get_balance(wallet_address)
+        text = f"Баланс: {balance} TON\n"
+        if tokens:
+            text += "\n" + "\n".join(tokens)
+        await call.message.answer(text)
+    elif call.data == "history":
+        txs = get_transactions(wallet_address)
+        text = "Последние транзакции:\n"
+        for tx in txs[:5]:
+            sender = tx.get("in_msg", {}).get("source", "Unknown")
+            tokens_info = get_tokens_from_tx(tx)
+            text += f"От: {sender}\n{tokens_info}\n\n"
+        await call.message.answer(text.strip())
+    elif call.data == "toggle_notifications":
+        notifications_enabled = not notifications_enabled
+        state = "включены" if notifications_enabled else "выключены"
+        await call.message.answer(f"Уведомления {state}.")
+
+# Запуск бота
+async def main():
+    asyncio.create_task(check_new_transactions())
+    await dp.start_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
