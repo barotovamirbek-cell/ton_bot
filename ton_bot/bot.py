@@ -24,10 +24,15 @@ def get_balance(wallet):
     data = res.json()
     balances = []
     if data.get("ok"):
-        ton_balance = int(data["result"]["balance"]) / 1e9
+        # TON
+        ton_balance = int(data["result"].get("balance", 0)) / 1e9
         balances.append({"token": "TON", "amount": ton_balance})
+        # Токены
         for token in data["result"].get("tokens", []):
-            balances.append({"token": token["name"], "amount": float(token["balance"])})
+            balances.append({
+                "token": token.get("name", "UNKNOWN"),
+                "amount": float(token.get("balance", 0))
+            })
     return balances
 
 def get_transactions(wallet):
@@ -68,7 +73,7 @@ def main_menu():
 def format_balance(balance):
     msg = ""
     for b in balance:
-        msg += f"{b['token']}: {format_amount(b['amount'])}\n"
+        msg += f"🔹 {b['token']}: {format_amount(b['amount'])}\n"
     return msg
 
 def format_transactions(txs):
