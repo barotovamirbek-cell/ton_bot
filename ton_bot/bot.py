@@ -1,114 +1,135 @@
+# bot.py
 import os
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import config
-import aiohttp
+from config import TON_API_KEY
+import httpx
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-wallets = {}      # Словарь: user_id -> wallet
-histories = {}    # Словарь: user_id -> список транзакций
+# ----------------------
+# Хранилище кошельков и последних транзакций
+wallets = {}  # user_id -> wallet address
+last_txs = {}  # user_id -> set of tx_ids
 
-# Клавиатура
+# ----------------------
+# Кнопки
 def main_keyboard():
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("💰 Баланс", callback_data="balance")],
-        [InlineKeyboardButton("📜 История", callback_data="history")]
-    ])
-    return kb
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💰 Баланс", callback_data="balance")],
+            [InlineKeyboardButton(text="📜 История", callback_data="history")]
+        ]
+    )
 
-# Команда старт
+# ----------------------
+# Получение баланса через TON API
+async def get_wallet_balance(address):
+    url = f"https://tonapi.io/v1/blockchain/getAccount?account={address}"
+    headers = {"Authorization": f"Bearer {TON_API_KEY}"}
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+        balances = {}
+        if "balance" in data:
+            balances["TON"] = data["balance"]
+        if "tokens" in data:
+            for t in data["tokens"]:
+                balances[t["symbol"]] = t["balance"]
+        return balances
+
+# ----------------------
+# Получение последних транзакций через TON API
+async def get_wallet_txs(address):
+    url = f"https://tonapi.io/v1/blockchain/getTransactions?account={address}&limit=10"
+    headers = {"Authorization": f"Bearer {TON_API_KEY}"}
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return data.get("transactions", [])
+
+# ----------------------
+# Отправка уведомления
+async def notify_transaction(user_id, tx):
+    msg = f"Новая транзакция\n"
+    if tx["from"] == wallets.get(user_id):
+        msg += f"Кому: {tx['to']}\n"
+    else:
+        msg += f"От: {tx['from']}\n"
+    msg += f"Валюта: {tx['symbol']}\n"
+    msg += f"Количество: {tx['amount']}"
+    await bot.send_message(user_id, msg)
+
+# ----------------------
+# Проверка новых транзакций
+async def monitor_wallets():
+    while True:
+        for user_id, address in wallets.items():
+            txs = await get_wallet_txs(address)
+            if user_id not in last_txs:
+                last_txs[user_id] = set(tx["id"] for tx in txs)
+                continue
+            for tx in txs:
+                if tx["id"] not in last_txs[user_id]:
+                    await notify_transaction(user_id, tx)
+                    last_txs[user_id].add(tx["id"])
+        await asyncio.sleep(10)  # проверяем каждые 10 секунд
+
+# ----------------------
+# Команды
 @dp.message()
 async def start_cmd(message: types.Message):
     await message.answer(
-        "Бот активирован.\nУстановите кошелек командой:\n/setwallet <адрес_кошелька>",
+        "Бот активирован. Установите кошелек командой /setwallet <адрес_кошелька>.",
         reply_markup=main_keyboard()
     )
 
-# Установка кошелька
 @dp.message()
-async def set_wallet(message: types.Message):
-    if message.text.startswith("/setwallet"):
-        args = message.text.split(maxsplit=1)
-        if len(args) < 2:
-            await message.answer("Используйте: /setwallet <адрес>")
-            return
-        wallet_address = args[1]
-        wallets[message.from_user.id] = wallet_address
-        histories[message.from_user.id] = []  # сбрасываем историю
-        await message.answer(f"Кошелек установлен: {wallet_address}")
-
-# Колбэк кнопок
-@dp.callback_query()
-async def callbacks(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    wallet = wallets.get(user_id)
-    if not wallet:
-        await callback.message.answer("Сначала установите кошелек /setwallet <адрес>")
+async def setwallet_cmd(message: types.Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("Используйте: /setwallet <адрес кошелька>")
         return
+    wallets[message.from_user.id] = args[1]
+    last_txs[message.from_user.id] = set()  # очищаем историю для нового кошелька
+    await message.answer(f"Кошелек установлен: {args[1]}")
+
+# ----------------------
+# Обработка кнопок
+@dp.callback_query()
+async def callbacks_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in wallets:
+        await callback.message.answer("Сначала установите кошелек командой /setwallet")
+        return
+    address = wallets[user_id]
 
     if callback.data == "balance":
-        bal_text = await get_balance(wallet)
-        await callback.message.answer(bal_text)
+        balances = await get_wallet_balance(address)
+        msg = "Баланс:\n"
+        for sym, amount in balances.items():
+            msg += f"{sym}: {amount}\n"
+        await callback.message.answer(msg)
     elif callback.data == "history":
-        history_list = histories.get(user_id, [])
-        if not history_list:
-            await callback.message.answer("История пуста")
-        else:
-            await callback.message.answer("\n\n".join(history_list))
+        await callback.message.answer("История транзакций пока не реализована.")
 
-# Получаем баланс всех токенов
-async def get_balance(wallet):
-    async with aiohttp.ClientSession() as session:
-        headers = {"X-API-Key": config.TON_API_KEY}
-        url = f"https://tonapi.io/v1/wallets/{wallet}/tokens"
-        async with session.get(url, headers=headers) as resp:
-            data = await resp.json()
-
-    lines = []
-    for token in data.get("tokens", []):
-        name = token.get("name", "TON")
-        amount = token.get("balance", "0")
-        lines.append(f"{name}: {amount}")
-    return "Баланс:\n" + "\n".join(lines)
-
-# Функция для уведомлений о новых транзакциях
-async def poll_transactions():
-    while True:
-        for user_id, wallet in wallets.items():
-            async with aiohttp.ClientSession() as session:
-                headers = {"X-API-Key": config.TON_API_KEY}
-                url = f"https://tonapi.io/v1/wallets/{wallet}/transactions?limit=10"
-                async with session.get(url, headers=headers) as resp:
-                    data = await resp.json()
-
-            for tx in reversed(data.get("transactions", [])):
-                tx_id = tx.get("id")
-                # Проверяем, есть ли уже в истории
-                if tx_id in [t.get("id") for t in histories[user_id]]:
-                    continue
-
-                # Формируем сообщение
-                direction = "Приход" if tx.get("incoming") else "Отправка"
-                other = tx.get("from") if tx.get("incoming") else tx.get("to")
-                currency = tx.get("token_name", "TON")
-                amount = tx.get("amount", "0")
-                msg = f"Новая транзакция\n{direction}: {other}\nВалюта: {currency}\nКоличество: {amount}"
-                await bot.send_message(user_id, msg)
-
-                # Сохраняем в истории
-                histories[user_id].append({"id": tx_id, "msg": msg})
-
-        await asyncio.sleep(10)  # проверка каждые 10 секунд
-
-# Запуск бота
-async def main():
-    asyncio.create_task(poll_transactions())
-    await dp.start_polling(bot)
-
+# ----------------------
+# Запуск бота и мониторинга
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+    from aiogram import F
 
+    dp.message.register(start_cmd, F.text == "/start")
+    dp.message.register(setwallet_cmd, F.text.startswith("/setwallet"))
+    dp.callback_query.register(callbacks_handler)
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(monitor_wallets())
+    loop.run_until_complete(dp.start_polling(bot))
