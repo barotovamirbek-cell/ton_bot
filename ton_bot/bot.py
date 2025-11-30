@@ -12,8 +12,7 @@ dp = Dispatcher()
 user_wallets = {}  # user_id -> address
 last_tx = {}       # user_id -> last_tx_hash
 
-
-# --- Кнопки ---
+# ---------- Кнопки ----------
 def main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -23,28 +22,28 @@ def main_keyboard():
         resize_keyboard=True
     )
 
-
-# --- Получение баланса и токенов ---
+# ---------- Баланс и токены ----------
 def get_wallet_info(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}"
     try:
         r = requests.get(url).json()
         if not r.get("ok"):
             return None
-
         res = r["result"]
         balance = int(res.get("balance", 0)) / 1e9
-        tokens = []
-        for t in res.get("tokens", []):
+
+        tokens_list = []
+        for t in res.get("jettons", []):
             symbol = t.get("name") or t.get("symbol") or "TOKEN"
-            amt = int(t.get("balance", 0)) / (10 ** int(t.get("decimals", 9)))
-            tokens.append(f"{symbol}: {amt}")
-        return balance, tokens
+            decimals = int(t.get("decimals", 9))
+            amt = int(t.get("balance", 0)) / (10 ** decimals)
+            tokens_list.append(f"{symbol}: {amt}")
+
+        return balance, tokens_list
     except:
         return None
 
-
-# --- История транзакций ---
+# ---------- История ----------
 def get_wallet_transactions(address, limit=5):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit={limit}"
     try:
@@ -55,30 +54,38 @@ def get_wallet_transactions(address, limit=5):
     except:
         return []
 
-
-# --- Форматирование токенов из транзакции ---
+# ---------- Форматирование токенов в транзакции ----------
 def parse_tokens_from_tx(tx):
     lines = []
     in_msg = tx.get("in_msg", {})
-    ton = int(in_msg.get("value", 0)) / 1e9
-    if ton != 0:
-        lines.append(f"TON: {ton}")
+
+    ton_value = int(in_msg.get("value", 0)) / 1e9
+    if ton_value != 0:
+        lines.append(f"TON: {ton_value}")
+
     for token in tx.get("token_balances", []):
         symbol = token.get("symbol") or token.get("name") or "TOKEN"
-        amt = int(token.get("balance", 0)) / (10 ** int(token.get("decimals", 9)))
+        decimals = int(token.get("decimals", 9))
+        amt = int(token.get("balance", 0)) / (10 ** decimals)
         lines.append(f"{symbol}: {amt}")
+
+    # Берём токены из jettons, если есть
+    for jetton in tx.get("jettons", []):
+        symbol = jetton.get("name") or jetton.get("symbol") or "TOKEN"
+        decimals = int(jetton.get("decimals", 9))
+        amt = int(jetton.get("balance", 0)) / (10 ** decimals)
+        lines.append(f"{symbol}: {amt}")
+
     return "\n".join(lines) if lines else "Нет данных"
 
-
-# --- Команды ---
+# ---------- Команды ----------
 @dp.message(Command("start"))
 async def start(message: types.Message):
     await message.answer(
         "👋 Привет! Отправь TON адрес для отслеживания.\n"
-        "После этого бот будет уведомлять о новых транзакциях и показывать баланс/историю.",
+        "Бот будет уведомлять о новых транзакциях и показывать баланс/историю.",
         reply_markup=main_keyboard()
     )
-
 
 @dp.message()
 async def handler(message: types.Message):
@@ -123,8 +130,7 @@ async def handler(message: types.Message):
 
     await message.answer("Не понял. Отправьте TON адрес или используйте кнопки.")
 
-
-# --- Проверка новых транзакций ---
+# ---------- Фоновый проверщик новых транзакций ----------
 async def check_new_transactions():
     while True:
         for uid, wallet in user_wallets.items():
@@ -149,12 +155,10 @@ async def check_new_transactions():
                 pass
         await asyncio.sleep(10)
 
-
-# --- Запуск ---
+# ---------- Запуск ----------
 async def main():
     asyncio.create_task(check_new_transactions())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
