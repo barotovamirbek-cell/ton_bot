@@ -57,6 +57,28 @@ def get_transactions(wallet):
 
     return txs
 
+# Получение баланса TON и токенов (jettons)
+def get_wallet_info(wallet):
+    info_text = ""
+    # Баланс TON
+    url_info = f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}"
+    resp_info = requests.get(url_info).json()
+    if resp_info.get("ok"):
+        balance = int(resp_info["result"].get("balance", 0)) / 1e9
+        info_text += f"Баланс TON: {balance} TON\n"
+
+    # Токены (jettons)
+    url_jettons = f"https://toncenter.com/api/v2/getJettons?account={wallet}"
+    resp_jettons = requests.get(url_jettons).json()
+    if resp_jettons.get("ok") and resp_jettons.get("result"):
+        info_text += "Токены:\n"
+        for j in resp_jettons["result"]:
+            name = j.get("name", "Unknown")
+            symbol = j.get("symbol", "JET")
+            balance_j = int(j.get("balance", 0)) / (10 ** int(j.get("decimals", 0)))
+            info_text += f"{name} ({symbol}): {balance_j}\n"
+    return info_text if info_text else "Баланс не найден"
+
 # Главное меню с кнопками
 def create_main_menu(chat_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -100,16 +122,23 @@ def toggle_notifications(message):
     status = "включены" if users[chat_id]["notifications"] else "выключены"
     bot.send_message(chat_id, f"Уведомления {status}")
 
-# /history
+# /history с нумерацией и балансом
 @bot.message_handler(commands=["history"])
 def show_history(message):
     chat_id = str(message.chat.id)
     ensure_user(chat_id)
     hist = users[chat_id]["history"]
+    wallet = users[chat_id]["wallet"]
+
+    # Добавляем баланс и токены сверху
+    text = get_wallet_info(wallet) + "\n\n"
+
     if hist:
-        text = "\n".join([f"{tx['hash']} | {tx['amount']} TON" for tx in hist])
+        for idx, tx in enumerate(hist, start=1):
+            text += f"{idx}. Hash: {tx['hash']}\n   From: {tx['from']}\n   To: {tx['to']}\n   Amount: {tx['amount']} TON\n\n"
     else:
-        text = "История пуста"
+        text += "История пуста"
+
     bot.send_message(chat_id, text)
 
 # /transactions
