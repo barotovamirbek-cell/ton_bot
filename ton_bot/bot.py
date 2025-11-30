@@ -7,25 +7,29 @@ import time
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = TeleBot(BOT_TOKEN)
 
-# Словарь для хранения кошельков пользователей
 user_wallets = {}
+notify_status = {}
 
-# API Toncenter
 TONCENTER_API = "https://toncenter.com/api/v2"
 
-# Получение баланса
+# ====== Форматирование чисел ======
+def format_amount(amount):
+    if amount == int(amount):
+        return str(int(amount))
+    return f"{amount:.9f}".rstrip('0').rstrip('.')
+
+# ====== Функции для работы с кошельком ======
 def get_balance(wallet):
     res = requests.get(f"{TONCENTER_API}/getWalletInformation", params={"address": wallet})
     data = res.json()
-    balance = []
+    balances = []
     if data.get("ok"):
         ton_balance = int(data["result"]["balance"]) / 1e9
-        balance.append({"token": "TON", "amount": ton_balance})
+        balances.append({"token": "TON", "amount": ton_balance})
         for token in data["result"].get("tokens", []):
-            balance.append({"token": token["name"], "amount": float(token["balance"])})
-    return balance
+            balances.append({"token": token["name"], "amount": float(token["balance"])})
+    return balances
 
-# Получение транзакций
 def get_transactions(wallet):
     res = requests.get(f"{TONCENTER_API}/getTransactions", params={"address": wallet, "limit": 50})
     data = res.json()
@@ -53,18 +57,38 @@ def get_transactions(wallet):
                 })
     return txs
 
-# Кнопки меню
+# ====== Кнопки ======
 def main_menu():
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row("💰 Баланс", "📝 История транзакций")
+    keyboard.row("🔔 Включить уведомления", "🔕 Выключить уведомления")
     return keyboard
 
-# Команда /start
+# ====== Форматирование сообщений ======
+def format_balance(balance):
+    msg = ""
+    for b in balance:
+        msg += f"{b['token']}: {format_amount(b['amount'])}\n"
+    return msg
+
+def format_transactions(txs):
+    msg = ""
+    for i, tx in enumerate(txs, 1):
+        msg += f"{i}. 📝 Hash: {tx['hash']}\n"
+        msg += f"   🔹 From: {tx['from']}\n"
+        msg += f"   🔹 To: {tx['to']}\n"
+        msg += f"   Токен: {tx['token']}\n"
+        msg += f"   Количество: {format_amount(tx['amount'])}\n\n"
+    return msg
+
+def format_new_tx(tx):
+    return f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\nТокен: {tx['token']}\nКоличество: {format_amount(tx['amount'])}\n"
+
+# ====== Команды ======
 @bot.message_handler(commands=["start"])
 def start(message):
     bot.send_message(message.chat.id, "Привет! Установи кошелёк командой /setwallet <адрес>", reply_markup=main_menu())
 
-# Команда /setwallet
 @bot.message_handler(commands=["setwallet"])
 def set_wallet(message):
     parts = message.text.split()
@@ -72,9 +96,10 @@ def set_wallet(message):
         bot.send_message(message.chat.id, "Используй: /setwallet <адрес>")
         return
     user_wallets[message.chat.id] = parts[1]
+    notify_status[message.chat.id] = True
     bot.send_message(message.chat.id, f"Адрес кошелька установлен: {parts[1]}", reply_markup=main_menu())
 
-# Обработка кнопок
+# ====== Обработка кнопок ======
 @bot.message_handler(func=lambda message: True)
 def menu_handler(message):
     wallet = user_wallets.get(message.chat.id)
@@ -84,30 +109,30 @@ def menu_handler(message):
 
     if message.text == "💰 Баланс":
         balance = get_balance(wallet)
-        msg = f"💰 Баланс кошелька {wallet} 💰\n\n"
-        for b in balance:
-            msg += f"{b['token']}: {b['amount']}\n"
-        bot.send_message(message.chat.id, msg)
+        bot.send_message(message.chat.id, f"💰 Баланс кошелька {wallet} 💰\n\n{format_balance(balance)}")
 
     elif message.text == "📝 История транзакций":
         txs = get_transactions(wallet)
         if not txs:
             bot.send_message(message.chat.id, "Транзакций нет")
             return
-        msg = ""
-        for i, tx in enumerate(txs, 1):
-            msg += f"{i}. 📝 Hash: {tx['hash']}\n"
-            msg += f"   🔹 From: {tx['from']}\n"
-            msg += f"   🔹 To: {tx['to']}\n"
-            msg += f"   Токен: {tx['token']}\n"
-            msg += f"   Количество: {tx['amount']}\n\n"
-        bot.send_message(message.chat.id, msg)
+        bot.send_message(message.chat.id, format_transactions(txs))
 
-# Уведомления о новых транзакциях
+    elif message.text == "🔔 Включить уведомления":
+        notify_status[message.chat.id] = True
+        bot.send_message(message.chat.id, "Уведомления включены")
+
+    elif message.text == "🔕 Выключить уведомления":
+        notify_status[message.chat.id] = False
+        bot.send_message(message.chat.id, "Уведомления выключены")
+
+# ====== Уведомления о новых транзакциях ======
 def poll_new_transactions():
     last_seen = {}
     while True:
         for chat_id, wallet in user_wallets.items():
+            if not notify_status.get(chat_id, True):
+                continue
             txs = get_transactions(wallet)
             if not txs:
                 continue
@@ -117,8 +142,7 @@ def poll_new_transactions():
             for tx in reversed(txs):
                 if tx["hash"] == last_seen[chat_id]:
                     break
-                msg = f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\nТокен: {tx['token']}\nКоличество: {tx['amount']}\n"
-                bot.send_message(chat_id, msg)
+                bot.send_message(chat_id, format_new_tx(tx))
             last_seen[chat_id] = txs[0]["hash"]
         time.sleep(15)
 
