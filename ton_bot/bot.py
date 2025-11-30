@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+# --- Токен бота ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Переменная окружения BOT_TOKEN не задана")
@@ -12,18 +13,22 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# --- Пользователи и кошельки ---
 user_wallets = {}  # user_id -> wallet address
 last_tx = {}       # user_id -> last transaction hash
 
-# --- Кнопки ---
+# --- Клавиатура ---
 def main_keyboard():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("💰 Баланс"))
-    kb.add(KeyboardButton("📜 История"))
-    kb.add(KeyboardButton("🔄 Сменить адрес"))
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("💰 Баланс"), KeyboardButton("📜 История")],
+            [KeyboardButton("🔄 Сменить адрес")]
+        ],
+        resize_keyboard=True
+    )
     return kb
 
-# --- Баланс и токены ---
+# --- Получение баланса и токенов ---
 def get_wallet_info(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}"
     try:
@@ -34,7 +39,6 @@ def get_wallet_info(address):
         balance = int(res.get("balance", 0)) / 1e9  # TON
 
         tokens_list = []
-
         for t in res.get("tokens", []):
             symbol = t.get("name") or t.get("symbol") or "TOKEN"
             decimals = int(t.get("decimals", 9))
@@ -51,7 +55,7 @@ def get_wallet_info(address):
     except:
         return None
 
-# --- История транзакций ---
+# --- Получение транзакций ---
 def get_wallet_transactions(address, limit=5):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit={limit}"
     try:
@@ -167,3 +171,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
