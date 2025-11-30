@@ -1,7 +1,4 @@
-import os
-import asyncio
-import logging
-import requests
+import os, asyncio, logging, requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -81,10 +78,8 @@ async def check_new_transactions():
                     tokens_info = get_tokens_from_tx(tx)
                     text = f"📥 Новая транзакция\nОт: {sender}\n{tokens_info}"
                     for uid in users:
-                        try:
-                            await bot.send_message(uid, text)
-                        except:
-                            pass
+                        try: await bot.send_message(uid, text)
+                        except: pass
                 last_transactions.add(tx["hash"])
         await asyncio.sleep(10)
 
@@ -115,8 +110,7 @@ async def callbacks(call: types.CallbackQuery):
     if call.data=="balance":
         bal, tokens = get_balance(wallet_address)
         text = f"Баланс: {bal} TON\n"
-        if tokens:
-            text += "\n" + "\n".join(tokens)
+        if tokens: text += "\n" + "\n".join(tokens)
         await call.message.answer(text)
     elif call.data=="history":
         txs = get_transactions(wallet_address)
