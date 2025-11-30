@@ -24,9 +24,44 @@ def save_users():
     with open("users.json", "w") as f:
         json.dump(users, f)
 
+# Баланс и токены
+def get_wallet_info(wallet):
+    text = f"💰 Баланс кошелька {wallet} 💰\n\n"
+
+    # Баланс TON
+    resp_info = requests.get(f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}").json()
+    if resp_info.get("ok") and resp_info.get("result"):
+        balance = int(resp_info["result"].get("balance", 0)) / 1e9
+        balance = "{:.9f}".format(balance).rstrip('0').rstrip('.') if balance > 0 else "0"
+        text += f"🔹 TON: {balance}\n"
+    else:
+        text += "🔹 TON: 0\n"
+
+    # Токены (jettons)
+    resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
+    if resp_jettons.get("ok") and resp_jettons.get("result"):
+        tokens = []
+        for j in resp_jettons["result"]:
+            name = j.get("name", "Unknown")
+            symbol = j.get("symbol", "JET")
+            balance_j = j.get("balance")
+            decimals = int(j.get("decimals", 0))
+            if balance_j is not None and int(balance_j) > 0:
+                balance_j = int(balance_j) / (10 ** decimals)
+                balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
+                tokens.append(f"{name} ({symbol}): {balance_j}")
+        if tokens:
+            text += "\n💎 Токены:\n" + "\n".join(f"   {t}" for t in tokens)
+        else:
+            text += "\n💎 Токены:\n   нет"
+    else:
+        text += "\n💎 Токены:\n   нет"
+
+    return text
+
 # Получение транзакций
 def get_transactions(wallet):
-    url = f"https://toncenter.com/api/v2/getTransactions?address={wallet}&limit=20"
+    url = f"https://toncenter.com/api/v2/getTransactions?address={wallet}&limit=50"
     resp = requests.get(url).json()
     txs = []
 
@@ -44,61 +79,16 @@ def get_transactions(wallet):
             in_from = in_msg.get("source", "")
             in_to = in_msg.get("destination", "")
             in_amount = int(in_msg.get("value", 0)) / 1e9 if in_msg else 0
-            in_amount = "{:.9f}".format(in_amount).rstrip('0').rstrip('.')
-
-            out_msgs = tx.get("out_msgs", [])
-            if out_msgs:
-                for out_msg in out_msgs:
-                    out_from = out_msg.get("source", "") or in_from
-                    out_to = out_msg.get("destination", "") or in_to
-                    out_amount = int(out_msg.get("value", 0)) / 1e9
-                    out_amount = "{:.9f}".format(out_amount).rstrip('0').rstrip('.')
-                    txs.append({
-                        "hash": hash_tx,
-                        "from": out_from,
-                        "to": out_to,
-                        "amount": out_amount
-                    })
-            else:
-                if in_amount != "0" or in_from or in_to:
-                    txs.append({
-                        "hash": hash_tx,
-                        "from": in_from,
-                        "to": in_to,
-                        "amount": in_amount
-                    })
+            in_amount = "{:.9f}".format(in_amount).rstrip('0').rstrip('.') if in_amount > 0 else "0"
+            txs.append({
+                "hash": hash_tx,
+                "from": in_from,
+                "to": in_to,
+                "amount": in_amount
+            })
 
     txs = sorted(txs, key=lambda x: x["hash"], reverse=True)
     return txs
-
-# Баланс и токены
-def get_wallet_info(wallet):
-    text = f"💰 Баланс кошелька {wallet} 💰\n\n"
-
-    # Баланс TON
-    resp_info = requests.get(f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}").json()
-    if resp_info.get("ok"):
-        balance = int(resp_info["result"].get("balance", 0)) / 1e9
-        balance = "{:.9f}".format(balance).rstrip('0').rstrip('.')
-        text += f"🔹 TON: {balance}\n"
-
-    # Токены (jettons)
-    resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
-    if resp_jettons.get("ok") and resp_jettons.get("result"):
-        tokens = []
-        for j in resp_jettons["result"]:
-            name = j.get("name", "Unknown")
-            symbol = j.get("symbol", "JET")
-            balance_j = j.get("balance")
-            decimals = int(j.get("decimals", 0))
-            if balance_j is not None:
-                balance_j = int(balance_j) / (10 ** decimals)
-                balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
-                tokens.append(f"{name} ({symbol}): {balance_j}")
-        if tokens:
-            text += "\n💎 Токены:\n" + "\n".join(f"   {t}" for t in tokens)
-
-    return text
 
 # Главное меню
 def create_main_menu(chat_id):
@@ -150,6 +140,10 @@ def show_history(message):
     ensure_user(chat_id)
     hist = users[chat_id]["history"]
     wallet = users[chat_id]["wallet"]
+
+    if not wallet:
+        bot.send_message(chat_id, "Сначала задайте кошелек через /setwallet")
+        return
 
     text = get_wallet_info(wallet) + "\n\n"
 
