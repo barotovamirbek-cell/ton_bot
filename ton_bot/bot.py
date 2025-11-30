@@ -15,17 +15,13 @@ dp = Dispatcher()
 user_wallets = {}  # user_id -> wallet address
 last_tx = {}       # user_id -> last transaction hash
 
-
 # --- Кнопки ---
 def main_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton("💰 Баланс"), KeyboardButton("📜 История")],
-            [KeyboardButton("🔄 Сменить адрес")],
-        ],
-        resize_keyboard=True
-    )
-
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("💰 Баланс"))
+    kb.add(KeyboardButton("📜 История"))
+    kb.add(KeyboardButton("🔄 Сменить адрес"))
+    return kb
 
 # --- Баланс и токены ---
 def get_wallet_info(address):
@@ -39,14 +35,12 @@ def get_wallet_info(address):
 
         tokens_list = []
 
-        # Стандартные токены
         for t in res.get("tokens", []):
             symbol = t.get("name") or t.get("symbol") or "TOKEN"
             decimals = int(t.get("decimals", 9))
             amt = int(t.get("balance", 0)) / (10 ** decimals)
             tokens_list.append(f"{symbol}: {amt}")
 
-        # Jettons
         for t in res.get("jettons", []):
             symbol = t.get("name") or t.get("symbol") or "TOKEN"
             decimals = int(t.get("decimals", 9))
@@ -56,7 +50,6 @@ def get_wallet_info(address):
         return balance, tokens_list
     except:
         return None
-
 
 # --- История транзакций ---
 def get_wallet_transactions(address, limit=5):
@@ -69,12 +62,9 @@ def get_wallet_transactions(address, limit=5):
     except:
         return []
 
-
-# --- Форматирование токенов в транзакции ---
 def parse_tokens_from_tx(tx):
     lines = []
     in_msg = tx.get("in_msg", {})
-
     ton_value = int(in_msg.get("value", 0)) / 1e9
     if ton_value != 0:
         lines.append(f"TON: {ton_value}")
@@ -93,7 +83,6 @@ def parse_tokens_from_tx(tx):
 
     return "\n".join(lines) if lines else "Нет данных"
 
-
 # --- Команды ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -102,7 +91,6 @@ async def cmd_start(message: types.Message):
         "Бот будет уведомлять о новых транзакциях и показывать баланс/историю.",
         reply_markup=main_keyboard()
     )
-
 
 @dp.message()
 async def handler(message: types.Message):
@@ -147,7 +135,6 @@ async def handler(message: types.Message):
 
     await message.answer("Не понял. Отправьте TON адрес или используйте кнопки.")
 
-
 # --- Проверка новых транзакций ---
 async def check_new_transactions():
     while True:
@@ -173,12 +160,10 @@ async def check_new_transactions():
                 pass
         await asyncio.sleep(10)
 
-
 # --- Запуск ---
 async def main():
     asyncio.create_task(check_new_transactions())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
