@@ -5,10 +5,10 @@ import requests
 from telebot import TeleBot, types
 import threading
 
-# Проверка переменной окружения
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Проверка переменной окружения BOT_TOKEN
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("Переменная TELEGRAM_BOT_TOKEN не задана!")
+    raise ValueError("Переменная BOT_TOKEN не задана!")
 
 bot = TeleBot(BOT_TOKEN)
 
@@ -28,7 +28,7 @@ def save_users():
     with open("users.json", "w") as f:
         json.dump(users, f)
 
-# Баланс и токены
+# Получение информации о кошельке
 def get_wallet_info(wallet):
     text = f"💰 Баланс кошелька {wallet} 💰\n\n"
 
@@ -85,7 +85,7 @@ def get_transactions(wallet):
     txs = sorted(txs, key=lambda x: x["hash"], reverse=True)
     return txs
 
-# Форматирование транзакции с токенами
+# Форматирование транзакции
 def format_transaction(tx, wallet):
     msg = ""
     msg += f"🔹 From: {tx['from']}\n"
