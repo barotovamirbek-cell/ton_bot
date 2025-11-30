@@ -1,4 +1,3 @@
-# Все ключи и настройки, кроме BOT_TOKEN
-TONCENTER_API_KEY = ""  # например AGVQI...
-# Можно добавить другие ключи
+# config.py
 TON_API_KEY = "AGVQICJNL2JNYSAAAAADLI55JSSIIXAJEO67ABA5ZGHXIBDDO3BBBB2I7GFC5N2NZV3VPKA"
+TON_API_URL = "https://tonapi.io/v1"
