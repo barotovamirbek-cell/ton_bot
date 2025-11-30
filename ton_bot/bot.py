@@ -8,14 +8,14 @@ import threading
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(BOT_TOKEN)
 
-# users.json будет хранить chat_id -> wallet info
+# users.json хранит chat_id -> wallet info
 try:
     with open("users.json", "r") as f:
         users = json.load(f)
 except FileNotFoundError:
     users = {}
 
-# Функция для гарантированной инициализации пользователя
+# Инициализация пользователя
 def ensure_user(chat_id):
     if chat_id not in users:
         users[chat_id] = {"wallet": "", "notifications": True, "last_hash": None, "history": []}
@@ -32,8 +32,20 @@ def get_transactions(wallet):
     response = requests.get(url)
     data = response.json()
     txs = []
+
     if data.get("ok"):
-        for tx in data["result"]["transactions"]:
+        result = data.get("result", [])
+
+        # Если result это словарь с ключом "transactions"
+        if isinstance(result, dict) and "transactions" in result:
+            transactions = result["transactions"]
+        # Если result это список транзакций напрямую
+        elif isinstance(result, list):
+            transactions = result
+        else:
+            transactions = []
+
+        for tx in transactions:
             in_msg = tx.get("in_msg", {})
             out_msgs = tx.get("out_msgs", [])
             txs.append({
@@ -42,9 +54,10 @@ def get_transactions(wallet):
                 "from": in_msg.get("source", "") if in_msg else "",
                 "to": out_msgs[0]["destination"] if out_msgs else "",
             })
+
     return txs
 
-# Команды
+# Главное меню с кнопками
 def create_main_menu(chat_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(types.KeyboardButton("/setwallet"))
@@ -53,6 +66,7 @@ def create_main_menu(chat_id):
     markup.add(types.KeyboardButton("/toggle"))
     bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
+# /start
 @bot.message_handler(commands=["start"])
 def start(message):
     chat_id = str(message.chat.id)
@@ -60,6 +74,7 @@ def start(message):
     bot.send_message(chat_id, "Привет! Используй кнопки ниже для действий.")
     create_main_menu(chat_id)
 
+# /setwallet
 @bot.message_handler(commands=["setwallet"])
 def set_wallet(message):
     chat_id = str(message.chat.id)
@@ -75,6 +90,7 @@ def set_wallet(message):
     save_users()
     bot.send_message(chat_id, f"Адрес кошелька изменен на {wallet}")
 
+# /toggle
 @bot.message_handler(commands=["toggle"])
 def toggle_notifications(message):
     chat_id = str(message.chat.id)
@@ -84,6 +100,7 @@ def toggle_notifications(message):
     status = "включены" if users[chat_id]["notifications"] else "выключены"
     bot.send_message(chat_id, f"Уведомления {status}")
 
+# /history
 @bot.message_handler(commands=["history"])
 def show_history(message):
     chat_id = str(message.chat.id)
@@ -95,6 +112,7 @@ def show_history(message):
         text = "История пуста"
     bot.send_message(chat_id, text)
 
+# /transactions
 @bot.message_handler(commands=["transactions"])
 def show_transactions(message):
     chat_id = str(message.chat.id)
@@ -132,7 +150,7 @@ def monitor_wallets():
         save_users()
         time.sleep(30)
 
-# Запуск
+# Запуск бота
 if __name__ == "__main__":
     threading.Thread(target=monitor_wallets, daemon=True).start()
     bot.infinity_polling()
