@@ -15,36 +15,33 @@ if not API_TOKEN:
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# ==== Состояние ====
 wallet_address = None
 notifications_enabled = True
 last_transactions = set()
-users = set()  # chat_id пользователей
+users = set()
 
-# ==== Кнопки ====
 def main_keyboard():
     kb = InlineKeyboardMarkup()
     kb.add(
-        InlineKeyboardButton(text="Баланс", callback_data="balance"),
-        InlineKeyboardButton(text="История", callback_data="history")
+        InlineKeyboardButton("Баланс", callback_data="balance"),
+        InlineKeyboardButton("История", callback_data="history")
     )
     kb.add(
-        InlineKeyboardButton(text="Вкл/Выкл уведомления", callback_data="toggle_notifications")
+        InlineKeyboardButton("Вкл/Выкл уведомления", callback_data="toggle_notifications")
     )
     return kb
 
-# ==== TON API ====
 def get_balance(address):
     url = f"https://toncenter.com/api/v2/getAddressInformation?address={address}&api_key=YOUR_TONCENTER_API_KEY"
     try:
         r = requests.get(url).json()
         if r.get("ok"):
             result = r["result"]
-            balance = int(result.get("balance", 0))/1e9
+            balance = int(result.get("balance",0))/1e9
             tokens = []
-            for t in result.get("tokens", []):
+            for t in result.get("tokens",[]):
                 symbol = t.get("name") or t.get("symbol") or "TOKEN"
-                amount = int(t.get("balance", 0)) / (10 ** int(t.get("decimals", 9)))
+                amount = int(t.get("balance",0)) / (10**int(t.get("decimals",9)))
                 tokens.append(f"{symbol}: {amount}")
             return balance, tokens
     except:
@@ -72,7 +69,6 @@ def get_tokens_from_tx(tx):
         tokens_text += f"{symbol}: {amount}\n"
     return tokens_text.strip()
 
-# ==== Проверка новых транзакций ====
 async def check_new_transactions():
     global last_transactions
     while True:
@@ -92,7 +88,6 @@ async def check_new_transactions():
                 last_transactions.add(tx["hash"])
         await asyncio.sleep(10)
 
-# ==== Хендлеры ====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     users.add(message.chat.id)
@@ -117,7 +112,6 @@ async def callbacks(call: types.CallbackQuery):
     if not wallet_address:
         await call.message.answer("Сначала установите адрес кошелька командой /setwallet")
         return
-
     if call.data=="balance":
         bal, tokens = get_balance(wallet_address)
         text = f"Баланс: {bal} TON\n"
@@ -137,7 +131,6 @@ async def callbacks(call: types.CallbackQuery):
         state = "включены" if notifications_enabled else "выключены"
         await call.message.answer(f"Уведомления {state}.")
 
-# ==== Запуск ====
 async def main():
     asyncio.create_task(check_new_transactions())
     await dp.start_polling(bot)
