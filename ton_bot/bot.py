@@ -8,18 +8,17 @@ from dotenv import load_dotenv
 # ==== Загрузка переменных окружения ====
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
-YOUR_CHAT_ID = os.getenv("YOUR_CHAT_ID")
-
-if not API_TOKEN or not YOUR_CHAT_ID:
-    raise ValueError("Не заданы переменные окружения API_TOKEN или YOUR_CHAT_ID")
+if not API_TOKEN:
+    raise ValueError("Не задан API_TOKEN в переменных окружения!")
 
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()  # В aiogram 3.x не передаем bot
+dp = Dispatcher()
 
 # ==== Состояние ====
 notifications_enabled = True
 last_transactions = set()
 wallet_address = None
+active_chat_id = None  # чат, куда слать уведомления
 
 # ==== Кнопки ====
 def main_keyboard():
@@ -70,7 +69,7 @@ def get_tokens_from_tx(tx):
 async def check_new_transactions():
     global last_transactions
     while True:
-        if wallet_address:
+        if wallet_address and active_chat_id:
             txs = get_transactions(wallet_address)
             new_txs = [tx for tx in txs if tx["hash"] not in last_transactions]
             for tx in new_txs:
@@ -78,12 +77,14 @@ async def check_new_transactions():
                     sender = tx.get("in_msg", {}).get("source", "Unknown")
                     tokens_info = get_tokens_from_tx(tx)
                     text = f"📥 Новая транзакция\nОт: {sender}\n{tokens_info}"
-                    await bot.send_message(chat_id=int(YOUR_CHAT_ID), text=text)
+                    await bot.send_message(chat_id=active_chat_id, text=text)
                 last_transactions.add(tx["hash"])
         await asyncio.sleep(15)
 
 # ==== Хендлеры ====
 async def start(message: types.Message):
+    global active_chat_id
+    active_chat_id = message.chat.id
     await message.answer(
         "Привет! Я уведомляю о новых транзакциях TON и токенов.\n"
         "Используй /setwallet чтобы установить адрес кошелька.",
