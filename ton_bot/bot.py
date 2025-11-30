@@ -7,34 +7,42 @@ import time
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 bot = TeleBot(BOT_TOKEN)
 
+# Словарь для хранения кошельков пользователей
 user_wallets = {}
+
+# API Toncenter
 TONCENTER_API = "https://toncenter.com/api/v2"
 
+# Получение баланса
 def get_balance(wallet):
     res = requests.get(f"{TONCENTER_API}/getWalletInformation", params={"address": wallet})
     data = res.json()
-    if data["ok"]:
-        balance = []
+    balance = []
+    if data.get("ok"):
         ton_balance = int(data["result"]["balance"]) / 1e9
         balance.append({"token": "TON", "amount": ton_balance})
         for token in data["result"].get("tokens", []):
             balance.append({"token": token["name"], "amount": float(token["balance"])})
-        return balance
-    return []
+    return balance
 
+# Получение транзакций
 def get_transactions(wallet):
     res = requests.get(f"{TONCENTER_API}/getTransactions", params={"address": wallet, "limit": 50})
     data = res.json()
     txs = []
-    if data["ok"]:
+    if data.get("ok"):
         for tx in data["result"]:
-            txs.append({
-                "hash": tx.get("hash", ""),
-                "from": tx.get("in_msg", {}).get("source", ""),
-                "to": tx.get("out_msgs", [{}])[0].get("destination", ""),
-                "amount": int(tx.get("in_msg", {}).get("value", 0))/1e9,
-                "token": "TON"
-            })
+            # TON транзакции
+            if "in_msg" in tx and tx["in_msg"]:
+                amount = int(tx["in_msg"].get("value", 0)) / 1e9
+                txs.append({
+                    "hash": tx.get("hash", ""),
+                    "from": tx["in_msg"].get("source", ""),
+                    "to": tx.get("out_msgs", [{}])[0].get("destination", ""),
+                    "amount": amount,
+                    "token": "TON"
+                })
+            # Токены
             for t in tx.get("token_balances", []):
                 txs.append({
                     "hash": tx.get("hash", ""),
@@ -51,10 +59,12 @@ def main_menu():
     keyboard.row("💰 Баланс", "📝 История транзакций")
     return keyboard
 
+# Команда /start
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.send_message(message.chat.id, "Привет! Сначала установи кошелёк командой /setwallet <адрес>", reply_markup=main_menu())
+    bot.send_message(message.chat.id, "Привет! Установи кошелёк командой /setwallet <адрес>", reply_markup=main_menu())
 
+# Команда /setwallet
 @bot.message_handler(commands=["setwallet"])
 def set_wallet(message):
     parts = message.text.split()
@@ -64,7 +74,7 @@ def set_wallet(message):
     user_wallets[message.chat.id] = parts[1]
     bot.send_message(message.chat.id, f"Адрес кошелька установлен: {parts[1]}", reply_markup=main_menu())
 
-# Обработчик кнопок
+# Обработка кнопок
 @bot.message_handler(func=lambda message: True)
 def menu_handler(message):
     wallet = user_wallets.get(message.chat.id)
@@ -93,6 +103,7 @@ def menu_handler(message):
             msg += f"   Количество: {tx['amount']}\n\n"
         bot.send_message(message.chat.id, msg)
 
+# Уведомления о новых транзакциях
 def poll_new_transactions():
     last_seen = {}
     while True:
@@ -103,7 +114,7 @@ def poll_new_transactions():
             if chat_id not in last_seen:
                 last_seen[chat_id] = txs[0]["hash"]
                 continue
-            for tx in txs:
+            for tx in reversed(txs):
                 if tx["hash"] == last_seen[chat_id]:
                     break
                 msg = f"💥 Новая транзакция!\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\nТокен: {tx['token']}\nКоличество: {tx['amount']}\n"
