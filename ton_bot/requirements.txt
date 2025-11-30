@@ -1,2 +1,2 @@
-aiogram==3.3.0
-aiohttp==3.8.5
+pyTelegramBotAPI==5.8.0
+requests==2.31.0
