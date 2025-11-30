@@ -82,17 +82,19 @@ def get_wallet_info(wallet):
         balance = "{:.9f}".format(balance).rstrip('0').rstrip('.')
         text += f"🔹 TON: {balance}\n"
 
-    # Токены
+    # Токены (jettons)
     resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
     if resp_jettons.get("ok") and resp_jettons.get("result"):
         tokens = []
         for j in resp_jettons["result"]:
+            name = j.get("name", "Unknown")
+            symbol = j.get("symbol", "JET")
             balance_j = j.get("balance")
             decimals = int(j.get("decimals", 0))
-            if balance_j is not None and int(balance_j) > 0:
+            if balance_j is not None:
                 balance_j = int(balance_j) / (10 ** decimals)
                 balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
-                tokens.append(f"{j.get('name','Unknown')} ({j.get('symbol','JET')}): {balance_j}")
+                tokens.append(f"{name} ({symbol}): {balance_j}")
         if tokens:
             text += "\n💎 Токены:\n" + "\n".join(f"   {t}" for t in tokens)
 
