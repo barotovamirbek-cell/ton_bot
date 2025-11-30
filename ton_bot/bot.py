@@ -3,9 +3,10 @@ import asyncio
 import requests
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters import Command
 from dotenv import load_dotenv
 
-# ==== Загрузка переменных окружения ====
+# ==== Настройки ====
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
 if not API_TOKEN:
@@ -14,11 +15,10 @@ if not API_TOKEN:
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# ==== Состояние ====
 notifications_enabled = True
 last_transactions = set()
 wallet_address = None
-active_chat_id = None  # чат, куда слать уведомления
+active_chat_id = None
 
 # ==== Кнопки ====
 def main_keyboard():
@@ -46,7 +46,6 @@ def get_balance(address):
         return balance, token_info
     return 0, []
 
-# ==== Транзакции ====
 def get_transactions(address):
     url = f"https://toncenter.com/api/v2/getTransactions?address={address}&limit=10&api_key=YOUR_TONCENTER_API_KEY"
     resp = requests.get(url).json()
@@ -125,9 +124,9 @@ async def callbacks(call: types.CallbackQuery):
         state = "включены" if notifications_enabled else "выключены"
         await call.message.answer(f"Уведомления {state}.")
 
-# ==== Регистрация хендлеров ====
-dp.message.register(start, commands=["start"])
-dp.message.register(set_wallet, commands=["setwallet"])
+# ==== Регистрация хендлеров с фильтром Command ====
+dp.message.register(start, Command(commands=["start"]))
+dp.message.register(set_wallet, Command(commands=["setwallet"]))
 dp.callback_query.register(callbacks)
 
 # ==== Запуск ====
