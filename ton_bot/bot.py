@@ -23,82 +23,93 @@ def main_keyboard():
     kb.add(InlineKeyboardButton("Выкл уведомления 🔕", callback_data="notif_off"))
     return kb
 
-# Универсальный запрос к API
 async def fetch_json(url, headers=None, params=None):
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params) as resp:
+            async with session.get(url, headers=headers, params=params, timeout=10) as resp:
                 if resp.status != 200:
                     return None
                 return await resp.json()
     except:
         return None
 
-# Получение баланса с fallback между API
 async def get_balance(wallet):
-    # 1. TONAPI
-    url = f"https://tonapi.io/v1/wallet/{wallet}/balance"
-    headers = {"X-API-Key": TONAPI_KEY}
-    data = await fetch_json(url, headers)
-    if data:
-        result = {}
-        result['TON'] = float(data.get("balance", 0)) / 1e9
-        for jt in data.get("jettons", []):
-            result[jt["symbol"]] = float(jt["balance"])
-        return result
+    """Попытка получить баланс через несколько API"""
+    # Сначала TONAPI
+    url1 = f"https://tonapi.io/v1/wallet/{wallet}/balance"
+    headers1 = {"X-API-Key": TONAPI_KEY}
+    data1 = await fetch_json(url1, headers=headers1)
+    if data1:
+        try:
+            result = {}
+            result['TON'] = float(data1.get("balance", 0)) / 1e9
+            for jt in data1.get("jettons", []):
+                result[jt["symbol"]] = float(jt["balance"])
+            return result
+        except:
+            pass
 
-    # 2. TONCENTER
+    # Если TONAPI недоступен, пробуем TONCENTER
     url2 = f"https://toncenter.com/api/v2/getWalletBalance?wallet={wallet}&api_key={TONCENTER_KEY}"
     data2 = await fetch_json(url2)
     if data2 and data2.get("ok"):
-        result = {}
-        result['TON'] = float(data2["result"]["balance"]) / 1e9
-        for jt in data2["result"].get("jettons", []):
-            result[jt["symbol"]] = float(jt["balance"])
-        return result
+        try:
+            result = {}
+            result['TON'] = float(data2["result"]["balance"]) / 1e9
+            for jt in data2["result"].get("jettons", []):
+                result[jt["symbol"]] = float(jt["balance"])
+            return result
+        except:
+            pass
     return None
 
-# Получение истории с fallback
 async def get_transactions(wallet):
-    # 1. TONAPI
-    url = f"https://tonapi.io/v1/wallet/{wallet}/transactions?limit=20"
-    headers = {"X-API-Key": TONAPI_KEY}
-    data = await fetch_json(url, headers)
+    """Попытка получить историю через несколько API"""
     txs = []
-    if data and "transactions" in data:
-        for tx in data["transactions"]:
-            amount = float(tx.get("amount", 0)) / 1e9
-            if amount < MIN_AMOUNT:
+
+    # TONAPI
+    url1 = f"https://tonapi.io/v1/wallet/{wallet}/transactions?limit=20"
+    headers1 = {"X-API-Key": TONAPI_KEY}
+    data1 = await fetch_json(url1, headers=headers1)
+    if data1 and "transactions" in data1:
+        for tx in data1["transactions"]:
+            try:
+                amount = float(tx.get("amount", 0)) / 1e9
+                if amount < MIN_AMOUNT:
+                    continue
+                txs.append({
+                    "hash": tx.get("hash"),
+                    "from": tx.get("from"),
+                    "to": tx.get("to"),
+                    "token": tx.get("token_symbol", "TON"),
+                    "amount": amount
+                })
+            except:
                 continue
-            txs.append({
-                "hash": tx.get("hash"),
-                "from": tx.get("from"),
-                "to": tx.get("to"),
-                "token": tx.get("token_symbol", "TON"),
-                "amount": amount
-            })
         return txs
 
-    # 2. TONCENTER
+    # TONCENTER
     url2 = f"https://toncenter.com/api/v2/getTransactions?wallet={wallet}&api_key={TONCENTER_KEY}&limit=20"
     data2 = await fetch_json(url2)
     if data2 and data2.get("ok"):
         for tx in data2["result"]:
-            amount = float(tx.get("amount", 0)) / 1e9
-            if amount < MIN_AMOUNT:
+            try:
+                amount = float(tx.get("amount", 0)) / 1e9
+                if amount < MIN_AMOUNT:
+                    continue
+                txs.append({
+                    "hash": tx.get("hash"),
+                    "from": tx.get("from"),
+                    "to": tx.get("to"),
+                    "token": tx.get("token_symbol", "TON"),
+                    "amount": amount
+                })
+            except:
                 continue
-            txs.append({
-                "hash": tx.get("hash"),
-                "from": tx.get("from"),
-                "to": tx.get("to"),
-                "token": tx.get("token_symbol", "TON"),
-                "amount": amount
-            })
         return txs
 
     return []
 
-# Отправка баланса
 async def send_balance(chat_id):
     wallet = chat_wallets.get(chat_id)
     if not wallet:
@@ -113,7 +124,6 @@ async def send_balance(chat_id):
         msg += f"🔹 {token}: {amount}\n"
     await bot.send_message(chat_id, msg)
 
-# Отправка истории
 async def send_transactions(chat_id):
     wallet = chat_wallets.get(chat_id)
     if not wallet:
