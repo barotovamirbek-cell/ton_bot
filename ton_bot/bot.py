@@ -2,7 +2,8 @@ import os
 import time
 import json
 import requests
-from telebot import TeleBot
+from telebot import TeleBot, types
+import threading
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(BOT_TOKEN)
@@ -20,29 +21,10 @@ def ensure_user(chat_id):
         users[chat_id] = {"wallet": "", "notifications": True, "last_hash": None, "history": []}
         save_users()
 
-# Получение баланса TON
-def get_ton_balance(wallet):
-    url = f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}"
-    response = requests.get(url)
-    data = response.json()
-    if data.get("ok"):
-        return int(data["result"]["balance"]) / 1e9
-    return 0
-
-# Получение jettons
-def get_jettons(wallet):
-    url = f"https://toncenter.com/api/v2/getJettons?account={wallet}"
-    response = requests.get(url)
-    data = response.json()
-    jettons = []
-    if data.get("ok"):
-        for j in data["result"]:
-            jettons.append({
-                "name": j.get("name", "Unknown"),
-                "symbol": j.get("symbol", "JET"),
-                "balance": int(j.get("balance", 0)) / (10 ** int(j.get("decimals", 0)))
-            })
-    return jettons
+# Сохраняем users.json
+def save_users():
+    with open("users.json", "w") as f:
+        json.dump(users, f)
 
 # Получение транзакций
 def get_transactions(wallet):
@@ -52,43 +34,47 @@ def get_transactions(wallet):
     txs = []
     if data.get("ok"):
         for tx in data["result"]["transactions"]:
+            in_msg = tx.get("in_msg", {})
+            out_msgs = tx.get("out_msgs", [])
             txs.append({
-                "hash": tx["hash"],
-                "amount": int(tx["in_msg"]["value"]) / 1e9 if "in_msg" in tx else 0,
-                "from": tx["in_msg"]["source"] if "in_msg" in tx else "",
-                "to": tx["out_msgs"][0]["destination"] if "out_msgs" in tx else "",
+                "hash": tx.get("hash", ""),
+                "amount": int(in_msg.get("value", 0)) / 1e9 if in_msg else 0,
+                "from": in_msg.get("source", "") if in_msg else "",
+                "to": out_msgs[0]["destination"] if out_msgs else "",
             })
     return txs
 
-# Сохраняем users.json
-def save_users():
-    with open("users.json", "w") as f:
-        json.dump(users, f)
+# Команды
+def create_main_menu(chat_id):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(types.KeyboardButton("/setwallet"))
+    markup.add(types.KeyboardButton("/history"))
+    markup.add(types.KeyboardButton("/transactions"))
+    markup.add(types.KeyboardButton("/toggle"))
+    bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
 
-# /start
 @bot.message_handler(commands=["start"])
 def start(message):
     chat_id = str(message.chat.id)
     ensure_user(chat_id)
-    bot.send_message(chat_id, "Привет! Используй /setwallet <адрес> чтобы задать кошелек TON")
+    bot.send_message(chat_id, "Привет! Используй кнопки ниже для действий.")
+    create_main_menu(chat_id)
 
-# /setwallet
 @bot.message_handler(commands=["setwallet"])
 def set_wallet(message):
     chat_id = str(message.chat.id)
+    ensure_user(chat_id)
     parts = message.text.split()
     if len(parts) != 2:
         bot.send_message(chat_id, "Используйте: /setwallet <адрес>")
         return
     wallet = parts[1]
-    ensure_user(chat_id)
     users[chat_id]["wallet"] = wallet
     users[chat_id]["last_hash"] = None
     users[chat_id]["history"] = []
     save_users()
     bot.send_message(chat_id, f"Адрес кошелька изменен на {wallet}")
 
-# /toggle
 @bot.message_handler(commands=["toggle"])
 def toggle_notifications(message):
     chat_id = str(message.chat.id)
@@ -98,7 +84,6 @@ def toggle_notifications(message):
     status = "включены" if users[chat_id]["notifications"] else "выключены"
     bot.send_message(chat_id, f"Уведомления {status}")
 
-# /history
 @bot.message_handler(commands=["history"])
 def show_history(message):
     chat_id = str(message.chat.id)
@@ -110,7 +95,6 @@ def show_history(message):
         text = "История пуста"
     bot.send_message(chat_id, text)
 
-# /transactions
 @bot.message_handler(commands=["transactions"])
 def show_transactions(message):
     chat_id = str(message.chat.id)
@@ -148,8 +132,7 @@ def monitor_wallets():
         save_users()
         time.sleep(30)
 
-# Запуск бота
+# Запуск
 if __name__ == "__main__":
-    import threading
     threading.Thread(target=monitor_wallets, daemon=True).start()
     bot.infinity_polling()
