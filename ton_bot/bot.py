@@ -7,12 +7,18 @@ from telebot import TeleBot
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 bot = TeleBot(BOT_TOKEN)
 
-# users.json будет хранить: chat_id -> wallet info
+# users.json будет хранить chat_id -> wallet info
 try:
     with open("users.json", "r") as f:
         users = json.load(f)
 except FileNotFoundError:
     users = {}
+
+# Функция для гарантированной инициализации пользователя
+def ensure_user(chat_id):
+    if chat_id not in users:
+        users[chat_id] = {"wallet": "", "notifications": True, "last_hash": None, "history": []}
+        save_users()
 
 # Получение баланса TON
 def get_ton_balance(wallet):
@@ -54,13 +60,16 @@ def get_transactions(wallet):
             })
     return txs
 
+# Сохраняем users.json
+def save_users():
+    with open("users.json", "w") as f:
+        json.dump(users, f)
+
 # /start
 @bot.message_handler(commands=["start"])
 def start(message):
     chat_id = str(message.chat.id)
-    if chat_id not in users:
-        users[chat_id] = {"wallet": "", "notifications": True, "last_hash": None, "history": []}
-        save_users()
+    ensure_user(chat_id)
     bot.send_message(chat_id, "Привет! Используй /setwallet <адрес> чтобы задать кошелек TON")
 
 # /setwallet
@@ -72,12 +81,10 @@ def set_wallet(message):
         bot.send_message(chat_id, "Используйте: /setwallet <адрес>")
         return
     wallet = parts[1]
-    if chat_id not in users:
-        users[chat_id] = {"wallet": wallet, "notifications": True, "last_hash": None, "history": []}
-    else:
-        users[chat_id]["wallet"] = wallet
-        users[chat_id]["last_hash"] = None
-        users[chat_id]["history"] = []
+    ensure_user(chat_id)
+    users[chat_id]["wallet"] = wallet
+    users[chat_id]["last_hash"] = None
+    users[chat_id]["history"] = []
     save_users()
     bot.send_message(chat_id, f"Адрес кошелька изменен на {wallet}")
 
@@ -85,7 +92,8 @@ def set_wallet(message):
 @bot.message_handler(commands=["toggle"])
 def toggle_notifications(message):
     chat_id = str(message.chat.id)
-    users[chat_id]["notifications"] = not users[chat_id].get("notifications", True)
+    ensure_user(chat_id)
+    users[chat_id]["notifications"] = not users[chat_id]["notifications"]
     save_users()
     status = "включены" if users[chat_id]["notifications"] else "выключены"
     bot.send_message(chat_id, f"Уведомления {status}")
@@ -94,7 +102,8 @@ def toggle_notifications(message):
 @bot.message_handler(commands=["history"])
 def show_history(message):
     chat_id = str(message.chat.id)
-    hist = users.get(chat_id, {}).get("history", [])
+    ensure_user(chat_id)
+    hist = users[chat_id]["history"]
     if hist:
         text = "\n".join([f"{tx['hash']} | {tx['amount']} TON" for tx in hist])
     else:
@@ -105,7 +114,8 @@ def show_history(message):
 @bot.message_handler(commands=["transactions"])
 def show_transactions(message):
     chat_id = str(message.chat.id)
-    wallet = users.get(chat_id, {}).get("wallet")
+    ensure_user(chat_id)
+    wallet = users[chat_id]["wallet"]
     if not wallet:
         bot.send_message(chat_id, "Сначала задайте кошелек через /setwallet")
         return
@@ -138,12 +148,7 @@ def monitor_wallets():
         save_users()
         time.sleep(30)
 
-# Сохраняем users.json
-def save_users():
-    with open("users.json", "w") as f:
-        json.dump(users, f)
-
-# Запуск
+# Запуск бота
 if __name__ == "__main__":
     import threading
     threading.Thread(target=monitor_wallets, daemon=True).start()
