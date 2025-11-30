@@ -5,11 +5,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-API_TOKEN = os.getenv("API_TOKEN")
-if not API_TOKEN:
-    raise ValueError("Переменная окружения API_TOKEN не задана")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("Переменная окружения BOT_TOKEN не задана")
 
-bot = Bot(token=API_TOKEN)
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 user_wallets = {}  # user_id -> wallet address
