@@ -5,7 +5,11 @@ import requests
 from telebot import TeleBot, types
 import threading
 
+# Проверка переменной окружения
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("Переменная TELEGRAM_BOT_TOKEN не задана!")
+
 bot = TeleBot(BOT_TOKEN)
 
 # users.json хранит chat_id -> wallet info
