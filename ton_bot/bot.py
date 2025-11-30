@@ -28,19 +28,17 @@ def save_users():
 def get_wallet_info(wallet):
     text = f"💰 Баланс кошелька {wallet} 💰\n\n"
 
-    # Баланс TON
+    # TON
     resp_info = requests.get(f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}").json()
+    ton_balance = 0
     if resp_info.get("ok") and resp_info.get("result"):
-        balance = int(resp_info["result"].get("balance", 0)) / 1e9
-        balance = "{:.9f}".format(balance).rstrip('0').rstrip('.') if balance > 0 else "0"
-        text += f"🔹 TON: {balance}\n"
-    else:
-        text += "🔹 TON: 0\n"
+        ton_balance = int(resp_info["result"].get("balance", 0)) / 1e9
+        ton_balance = "{:.9f}".format(ton_balance).rstrip('0').rstrip('.') if ton_balance > 0 else "0"
+    text += f"Токен: TON\nКоличество: {ton_balance}\n"
 
-    # Токены (jettons)
+    # Jettons
     resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
     if resp_jettons.get("ok") and resp_jettons.get("result"):
-        tokens = []
         for j in resp_jettons["result"]:
             name = j.get("name", "Unknown")
             symbol = j.get("symbol", "JET")
@@ -49,14 +47,7 @@ def get_wallet_info(wallet):
             if balance_j is not None and int(balance_j) > 0:
                 balance_j = int(balance_j) / (10 ** decimals)
                 balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
-                tokens.append(f"{name} ({symbol}): {balance_j}")
-        if tokens:
-            text += "\n💎 Токены:\n" + "\n".join(f"   {t}" for t in tokens)
-        else:
-            text += "\n💎 Токены:\n   нет"
-    else:
-        text += "\n💎 Токены:\n   нет"
-
+                text += f"Токен: {name} ({symbol})\nКоличество: {balance_j}\n"
     return text
 
 # Получение транзакций
@@ -89,6 +80,32 @@ def get_transactions(wallet):
 
     txs = sorted(txs, key=lambda x: x["hash"], reverse=True)
     return txs
+
+# Форматирование транзакции с токенами
+def format_transaction(tx, wallet):
+    msg = ""
+    msg += f"🔹 From: {tx['from']}\n"
+    msg += f"🔹 To: {tx['to']}\n"
+
+    # TON
+    amount = float(tx.get("amount", 0))
+    amount_str = "{:.9f}".format(amount).rstrip('0').rstrip('.') if amount > 0 else "0"
+    msg += f"Токен: TON\nКоличество: {amount_str}\n"
+
+    # Jettons
+    resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
+    if resp_jettons.get("ok") and resp_jettons.get("result"):
+        for j in resp_jettons["result"]:
+            name = j.get("name", "Unknown")
+            symbol = j.get("symbol", "JET")
+            balance_j = j.get("balance")
+            decimals = int(j.get("decimals", 0))
+            if balance_j is not None and int(balance_j) > 0:
+                balance_j = int(balance_j) / (10 ** decimals)
+                balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
+                msg += f"Токен: {name} ({symbol})\nКоличество: {balance_j}\n"
+
+    return msg
 
 # Главное меню
 def create_main_menu(chat_id):
@@ -138,18 +155,19 @@ def toggle_notifications(message):
 def show_history(message):
     chat_id = str(message.chat.id)
     ensure_user(chat_id)
-    hist = users[chat_id]["history"]
     wallet = users[chat_id]["wallet"]
 
     if not wallet:
         bot.send_message(chat_id, "Сначала задайте кошелек через /setwallet")
         return
 
-    text = get_wallet_info(wallet) + "\n\n"
+    hist = users[chat_id]["history"]
+    text = get_wallet_info(wallet) + "\n"
 
     if hist:
         for idx, tx in enumerate(hist, start=1):
-            text += f"{idx}. 📝 Hash: {tx['hash']}\n   🔹 From: {tx['from']}\n   🔹 To: {tx['to']}\n   💰 Amount: {tx['amount']} TON\n\n"
+            text += f"{idx}. 📝 Hash: {tx['hash']}\n"
+            text += format_transaction(tx, wallet) + "\n"
     else:
         text += "История пуста"
 
@@ -166,12 +184,12 @@ def show_transactions(message):
         return
     txs = get_transactions(wallet)
     if txs:
-        text = "\n\n".join([f"📝 Hash: {tx['hash']}\n🔹 From: {tx['from']}\n🔹 To: {tx['to']}\n💰 Amount: {tx['amount']} TON" for tx in txs])
+        text = "\n\n".join([f"📝 Hash: {tx['hash']}\n{format_transaction(tx, wallet)}" for tx in txs])
     else:
         text = "Транзакции не найдены"
     bot.send_message(chat_id, text)
 
-# Мониторинг транзакций с токенами
+# Мониторинг транзакций
 def monitor_wallets():
     while True:
         for chat_id, info in users.items():
@@ -194,26 +212,7 @@ def monitor_wallets():
                         if info.get("notifications", True):
                             for tx in reversed(new_txs):
                                 msg = f"💥 Новая транзакция!\n"
-                                msg += f"🔹 From: {tx['from']}\n"
-                                msg += f"🔹 To: {tx['to']}\n"
-
-                                # Получаем токены и добавляем в уведомление
-                                resp_jettons = requests.get(f"https://toncenter.com/api/v2/getJettons?account={wallet}").json()
-                                if resp_jettons.get("ok") and resp_jettons.get("result"):
-                                    tokens = []
-                                    for j in resp_jettons["result"]:
-                                        name = j.get("name", "Unknown")
-                                        symbol = j.get("symbol", "JET")
-                                        balance_j = j.get("balance")
-                                        decimals = int(j.get("decimals", 0))
-                                        if balance_j is not None and int(balance_j) > 0:
-                                            balance_j = int(balance_j) / (10 ** decimals)
-                                            balance_j = "{:.9f}".format(balance_j).rstrip('0').rstrip('.')
-                                            tokens.append(f"{name} ({symbol}): {balance_j}")
-                                    if tokens:
-                                        msg += "\n".join([f"Токен: {t.split(':')[0]}\nКоличество: {t.split(':')[1].strip()}" for t in tokens]) + "\n"
-
-                                msg += f"\n💰 Amount: {tx['amount']} TON"
+                                msg += format_transaction(tx, wallet)
                                 bot.send_message(chat_id, msg)
             except Exception as e:
                 print("Ошибка мониторинга:", e)
