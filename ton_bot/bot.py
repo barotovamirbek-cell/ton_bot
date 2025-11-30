@@ -21,65 +21,88 @@ def ensure_user(chat_id):
         users[chat_id] = {"wallet": "", "notifications": True, "last_hash": None, "history": []}
         save_users()
 
-# Сохраняем users.json
 def save_users():
     with open("users.json", "w") as f:
         json.dump(users, f)
 
-# Получение транзакций
+# Получение всех транзакций (входящие и исходящие)
 def get_transactions(wallet):
-    url = f"https://toncenter.com/api/v2/getTransactions?address={wallet}&limit=10"
+    url = f"https://toncenter.com/api/v2/getTransactions?address={wallet}&limit=20"
     response = requests.get(url)
     data = response.json()
     txs = []
 
     if data.get("ok"):
         result = data.get("result", [])
-
-        # Если result это словарь с ключом "transactions"
         if isinstance(result, dict) and "transactions" in result:
             transactions = result["transactions"]
-        # Если result это список транзакций напрямую
         elif isinstance(result, list):
             transactions = result
         else:
             transactions = []
 
         for tx in transactions:
+            hash_tx = tx.get("hash", "")
+            # Входящее сообщение
             in_msg = tx.get("in_msg", {})
-            out_msgs = tx.get("out_msgs", [])
-            txs.append({
-                "hash": tx.get("hash", ""),
-                "amount": int(in_msg.get("value", 0)) / 1e9 if in_msg else 0,
-                "from": in_msg.get("source", "") if in_msg else "",
-                "to": out_msgs[0]["destination"] if out_msgs else "",
-            })
+            in_from = in_msg.get("source", "")
+            in_to = in_msg.get("destination", "")
+            in_amount = int(in_msg.get("value", 0)) / 1e9 if in_msg else 0
 
+            # Исходящие сообщения
+            out_msgs = tx.get("out_msgs", [])
+            if out_msgs:
+                for out_msg in out_msgs:
+                    out_from = out_msg.get("source", "")
+                    out_to = out_msg.get("destination", "")
+                    out_amount = int(out_msg.get("value", 0)) / 1e9
+                    txs.append({
+                        "hash": hash_tx,
+                        "from": out_from or in_from,
+                        "to": out_to or in_to,
+                        "amount": out_amount
+                    })
+            else:
+                # Если исходящих нет, сохраняем входящую
+                if in_amount > 0 or in_from or in_to:
+                    txs.append({
+                        "hash": hash_tx,
+                        "from": in_from,
+                        "to": in_to,
+                        "amount": in_amount
+                    })
+
+    # Сортировка последних сверху
+    txs = sorted(txs, key=lambda x: x["hash"], reverse=True)
     return txs
 
-# Получение баланса TON и токенов (jettons)
+# Баланс TON и токены
 def get_wallet_info(wallet):
     info_text = ""
-    # Баланс TON
     url_info = f"https://toncenter.com/api/v2/getAddressInformation?address={wallet}"
     resp_info = requests.get(url_info).json()
     if resp_info.get("ok"):
         balance = int(resp_info["result"].get("balance", 0)) / 1e9
         info_text += f"Баланс TON: {balance} TON\n"
 
-    # Токены (jettons)
     url_jettons = f"https://toncenter.com/api/v2/getJettons?account={wallet}"
     resp_jettons = requests.get(url_jettons).json()
     if resp_jettons.get("ok") and resp_jettons.get("result"):
-        info_text += "Токены:\n"
+        tokens = []
         for j in resp_jettons["result"]:
             name = j.get("name", "Unknown")
             symbol = j.get("symbol", "JET")
-            balance_j = int(j.get("balance", 0)) / (10 ** int(j.get("decimals", 0)))
-            info_text += f"{name} ({symbol}): {balance_j}\n"
+            balance_j = j.get("balance")
+            decimals = int(j.get("decimals", 0))
+            if balance_j is not None:
+                balance_j = int(balance_j) / (10 ** decimals)
+                tokens.append(f"{name} ({symbol}): {balance_j}")
+        if tokens:
+            info_text += "Токены:\n" + "\n".join(tokens) + "\n"
+
     return info_text if info_text else "Баланс не найден"
 
-# Главное меню с кнопками
+# Главное меню
 def create_main_menu(chat_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(types.KeyboardButton("/setwallet"))
@@ -112,7 +135,7 @@ def set_wallet(message):
     save_users()
     bot.send_message(chat_id, f"Адрес кошелька изменен на {wallet}")
 
-# /toggle
+# /toggle уведомления
 @bot.message_handler(commands=["toggle"])
 def toggle_notifications(message):
     chat_id = str(message.chat.id)
@@ -122,7 +145,7 @@ def toggle_notifications(message):
     status = "включены" if users[chat_id]["notifications"] else "выключены"
     bot.send_message(chat_id, f"Уведомления {status}")
 
-# /history с нумерацией и балансом
+# /history с нумерацией
 @bot.message_handler(commands=["history"])
 def show_history(message):
     chat_id = str(message.chat.id)
@@ -130,7 +153,6 @@ def show_history(message):
     hist = users[chat_id]["history"]
     wallet = users[chat_id]["wallet"]
 
-    # Добавляем баланс и токены сверху
     text = get_wallet_info(wallet) + "\n\n"
 
     if hist:
@@ -157,7 +179,7 @@ def show_transactions(message):
         text = "Транзакции не найдены"
     bot.send_message(chat_id, text)
 
-# Мониторинг всех кошельков
+# Мониторинг транзакций
 def monitor_wallets():
     while True:
         for chat_id, info in users.items():
@@ -179,7 +201,7 @@ def monitor_wallets():
         save_users()
         time.sleep(30)
 
-# Запуск бота
+# Запуск
 if __name__ == "__main__":
     threading.Thread(target=monitor_wallets, daemon=True).start()
     bot.infinity_polling()
