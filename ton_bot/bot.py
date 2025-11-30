@@ -1,155 +1,131 @@
 import os
-import requests
 import time
-from threading import Thread
+import requests
 from telebot import TeleBot, types
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не установлен")
 bot = TeleBot(BOT_TOKEN)
 
-# Пользователи
-wallets = {}         # user_id -> кошелек
-notifications = {}   # user_id -> True/False
-last_seen = {}       # user_id -> set(hash)
+wallet_address = None
+notify_enabled = True
+last_tx_hash = set()
 
-# --- Конфигурация Toncenter API ---
 TONCENTER_API = "https://toncenter.com/api/v2"
-TONCENTER_KEY = os.getenv("TONCENTER_KEY")  # Если есть API Key
 
-HEADERS = {"X-API-Key": TONCENTER_KEY} if TONCENTER_KEY else {}
-
-# --- Помощники ---
-def format_amount(a: float) -> str:
-    s = f"{a:.9f}".rstrip("0").rstrip(".")
-    return s if s else "0"
-
-def get_balance(wallet: str) -> str:
-    url = f"{TONCENTER_API}/getAddressInformation?address={wallet}"
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    if r.status_code != 200:
+def get_wallet_balance(wallet):
+    url = f"{TONCENTER_API}/getAccount?account={wallet}"
+    r = requests.get(url).json()
+    if not r.get("ok"):
         return "Баланс недоступен"
-    data = r.json().get("result")
-    if not data:
-        return "Баланс недоступен"
-    msg = []
-    # TON
-    ton = int(data.get("balance", 0)) / 1e9
-    msg.append(f"🔹 TON: {format_amount(ton)}")
-    # Jettons / токены
-    for jt in data.get("jettons", []):
-        name = jt.get("name") or jt.get("symbol") or "TOKEN"
-        bal = float(jt.get("balance", 0))
-        msg.append(f"🔹 {name}: {format_amount(bal)}")
-    return "\n".join(msg)
+    result = r["result"]
+    balances = []
 
-def get_transactions(wallet: str):
-    url = f"{TONCENTER_API}/getTransactions?address={wallet}&limit=50"
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    if r.status_code != 200:
+    # Основной TON
+    ton_amount = int(result.get("balance", 0)) / 10**9
+    balances.append(f"TON: {ton_amount}")
+
+    # Токены
+    for token in result.get("fungible_tokens", []):
+        name = token.get("name", "Unknown")
+        decimals = int(token.get("decimals", 0))
+        amount = int(token.get("balance", 0)) / (10**decimals if decimals else 1)
+        balances.append(f"{name}: {amount}")
+
+    return "\n".join(balances)
+
+def get_transactions(wallet, limit=10):
+    url = f"{TONCENTER_API}/getTransactions?account={wallet}&limit={limit}"
+    r = requests.get(url).json()
+    if not r.get("ok"):
         return []
-    data = r.json().get("result", [])
-    return data
+    return r["result"].get("transactions", [])
 
-def format_transactions_list(txs: list) -> str:
-    if not txs:
-        return "Транзакций нет"
-    msg = ""
-    count = 0
-    seen_hashes = set()
-    for tx in txs:
-        h = tx.get("hash")
-        if not h or h in seen_hashes:
-            continue
-        seen_hashes.add(h)
-        count += 1
-        frm = tx.get("source") or ""
-        to = tx.get("destination") or ""
-        token = "TON"
-        amount = float(tx.get("value", 0)) / 1e9
-        if tx.get("jetton"):
-            token = tx["jetton"].get("symbol") or tx["jetton"].get("name") or "TOKEN"
-            amount = float(tx["jetton"].get("balance", 0))
-        msg += f"{count}. 📝 Hash: {h}\n"
-        msg += f"   🔹 From: {frm}\n"
-        msg += f"   🔹 To: {to}\n"
-        msg += f"   🔹 Токен: {token}\n"
-        msg += f"   🔹 Количество: {format_amount(amount)}\n\n"
-    return msg if msg else "Транзакций нет"
+def format_transaction(tx):
+    # Определяем токены
+    token_name = "TON"
+    amount = int(tx.get("in_msg", {}).get("value", 0)) / 10**9
+    if tx.get("in_msg", {}).get("msg_data_type") == "frozen":
+        token_name = tx.get("in_msg", {}).get("token", {}).get("name", "Unknown")
+        amount = int(tx.get("in_msg", {}).get("token", {}).get("balance", 0))
+    return (
+        f"📝 Hash: {tx.get('hash')}\n"
+        f"🔹 From: {tx.get('source')}\n"
+        f"🔹 To: {tx.get('destination')}\n"
+        f"Токен: {token_name}\n"
+        f"Количество: {amount}\n"
+    )
 
-# --- Telegram ---
-def main_menu():
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("💰 Баланс", "📝 История")
-    kb.row("🔔 Вкл уведомления", "🔕 Выкл уведомлений")
-    return kb
-
+# --- Команды ---
 @bot.message_handler(commands=["start"])
-def cmd_start(m):
-    wallets[m.chat.id] = ""
-    notifications[m.chat.id] = False
-    bot.send_message(m.chat.id, "Привет! Установи кошелёк через /setwallet <адрес>", reply_markup=main_menu())
+def start_message(msg):
+    bot.send_message(msg.chat.id, "Привет! Я слежу за TON кошельком.")
 
 @bot.message_handler(commands=["setwallet"])
-def cmd_setwallet(m):
-    parts = m.text.split()
-    if len(parts) != 2:
-        bot.send_message(m.chat.id, "Используй: /setwallet <адрес>")
+def set_wallet(msg):
+    global wallet_address
+    parts = msg.text.split()
+    if len(parts) < 2:
+        bot.send_message(msg.chat.id, "Использование: /setwallet <адрес_кошелька>")
         return
-    wallets[m.chat.id] = parts[1]
-    last_seen[m.chat.id] = set()
-    bot.send_message(m.chat.id, f"Адрес установлен: {parts[1]}")
+    wallet_address = parts[1]
+    bot.send_message(msg.chat.id, f"Кошелек установлен: {wallet_address}")
 
-@bot.message_handler(func=lambda m: True)
-def handler(m):
-    user = m.chat.id
-    wallet = wallets.get(user)
-    if m.text == "💰 Баланс":
-        if not wallet:
-            bot.send_message(user, "Сначала установи кошелек через /setwallet")
-            return
-        bot.send_message(user, get_balance(wallet))
-    elif m.text == "📝 История":
-        if not wallet:
-            bot.send_message(user, "Сначала установи кошелек через /setwallet")
-            return
-        txs = get_transactions(wallet)
-        bot.send_message(user, format_transactions_list(txs))
-    elif m.text == "🔔 Вкл уведомления":
-        notifications[user] = True
-        bot.send_message(user, "Уведомления включены")
-    elif m.text == "🔕 Выкл уведомлений":
-        notifications[user] = False
-        bot.send_message(user, "Уведомления выключены")
+@bot.message_handler(commands=["balance"])
+def show_balance(msg):
+    if not wallet_address:
+        bot.send_message(msg.chat.id, "Кошелек не установлен")
+        return
+    balance = get_wallet_balance(wallet_address)
+    bot.send_message(msg.chat.id, f"💰 Баланс кошелька {wallet_address}\n{balance}")
 
-# --- Фоновая проверка транзакций ---
-def monitor_loop():
+@bot.message_handler(commands=["transactions"])
+def show_transactions(msg):
+    if not wallet_address:
+        bot.send_message(msg.chat.id, "Кошелек не установлен")
+        return
+    txs = get_transactions(wallet_address)
+    if not txs:
+        bot.send_message(msg.chat.id, "Транзакций нет")
+        return
+    for i, tx in enumerate(txs, 1):
+        bot.send_message(msg.chat.id, f"{i}.\n{format_transaction(tx)}")
+
+@bot.message_handler(commands=["notify_on"])
+def notify_on(msg):
+    global notify_enabled
+    notify_enabled = True
+    bot.send_message(msg.chat.id, "Уведомления включены")
+
+@bot.message_handler(commands=["notify_off"])
+def notify_off(msg):
+    global notify_enabled
+    notify_enabled = False
+    bot.send_message(msg.chat.id, "Уведомления выключены")
+
+# --- Отслеживание новых транзакций ---
+def check_new_transactions():
+    global last_tx_hash
+    if not wallet_address:
+        return
+    txs = get_transactions(wallet_address, limit=5)
+    for tx in txs:
+        if tx["hash"] not in last_tx_hash:
+            last_tx_hash.add(tx["hash"])
+            if notify_enabled:
+                text = f"💥 Новая транзакция!\n{format_transaction(tx)}"
+                # Отправка всем пользователям, которые писали боту
+                bot.send_message(chat_id=wallet_chat_id, text=text)
+
+# --- Основной цикл ---
+def run_bot():
     while True:
-        for user, wallet in wallets.items():
-            if not wallet or not notifications.get(user, False):
-                continue
-            txs = get_transactions(wallet)
-            if not txs:
-                continue
-            seen = last_seen.setdefault(user, set())
-            for tx in reversed(txs):
-                h = tx.get("hash")
-                if not h or h in seen:
-                    continue
-                seen.add(h)
-                frm = tx.get("source") or ""
-                to = tx.get("destination") or ""
-                token = "TON"
-                amount = float(tx.get("value", 0)) / 1e9
-                if tx.get("jetton"):
-                    token = tx["jetton"].get("symbol") or tx["jetton"].get("name") or "TOKEN"
-                    amount = float(tx["jetton"].get("balance", 0))
-                bot.send_message(user,
-                    f"💥 Новая транзакция!\n🔹 From: {frm}\n🔹 To: {to}\nТокен: {token}\nКоличество: {format_amount(amount)}"
-                )
-        time.sleep(20)
+        try:
+            check_new_transactions()
+            bot.polling(none_stop=True)
+        except Exception as e:
+            print("Ошибка:", e)
+            time.sleep(5)
 
-Thread(target=monitor_loop, daemon=True).start()
-
-bot.infinity_polling()
+if __name__ == "__main__":
+    wallet_chat_id = os.getenv("CHAT_ID")  # Если хочешь всем писать, нужно хранить список пользователей
+    run_bot()
