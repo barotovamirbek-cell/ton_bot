@@ -1,12 +1,12 @@
 # bot.py
 import os
 import asyncio
-from typing import Dict, Any, List, Optional
 import requests
+from typing import Dict, Any, List, Optional
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import config
+import config  # здесь лежит TON_API_KEY
 
 # -------------------- Настройки --------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,7 +19,7 @@ dp = Dispatcher()
 TONAPI_HEADERS = {"Authorization": f"Bearer {config.TON_API_KEY}"}
 TONAPI_BASE = "https://tonapi.io/v2/accounts"
 
-CHECK_INTERVAL = 10  # интервал проверки транзакций
+CHECK_INTERVAL = 10  # сек
 
 # -------------------- Хранилище --------------------
 users_wallets: Dict[int, str] = {}
@@ -29,15 +29,16 @@ users_history: Dict[int, List[str]] = {}
 
 # -------------------- UI --------------------
 def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton("💰 Баланс", callback_data="balance"),
-            InlineKeyboardButton("📜 История", callback_data="history")
+            InlineKeyboardButton(text="💰 Баланс", callback_data="balance"),
+            InlineKeyboardButton(text="📜 История", callback_data="history")
         ],
         [
-            InlineKeyboardButton("🔔 Вкл/Выкл уведомления", callback_data="toggle_notify")
+            InlineKeyboardButton(text="🔔 Вкл/Выкл уведомления", callback_data="toggle_notify")
         ]
     ])
+    return kb
 
 # -------------------- TON API --------------------
 def _tonapi_get_account(wallet: str) -> Dict[str, Any]:
@@ -64,110 +65,83 @@ async def tonapi_get_transactions(wallet: str, limit: int = 20) -> List[Dict[str
     except Exception:
         return []
 
-# -------------------- Парсеры --------------------
+# -------------------- Парсер балансов --------------------
 def parse_account_balances(account_json: Dict[str, Any]) -> Dict[str, float]:
     balances: Dict[str, float] = {}
 
-    # TON
     ton_balance = float(account_json.get("balance", 0))
     if ton_balance > 1e6:
-        ton_balance /= 1e9
+        ton_balance = ton_balance / 1e9
     balances["TON"] = round(ton_balance, 9)
 
-    # Все токены
-    token_lists = []
-    for key in ("jettons", "tokens", "wallets", "balances"):
-        if key in account_json and isinstance(account_json[key], list):
-            token_lists = account_json[key]
-            break
-
+    token_lists = account_json.get("jettons") or account_json.get("tokens") or account_json.get("wallets") or []
     for token in token_lists:
         sym = token.get("symbol") or token.get("name") or "TOKEN"
         amt = 0.0
         if isinstance(token.get("balance"), dict):
             try:
-                raw = int(token["balance"].get("amount", 0))
-                decimals = int(token["balance"].get("decimals", 0))
-                amt = raw / (10 ** decimals) if decimals else float(raw)
-            except Exception:
+                amount_raw = int(token["balance"].get("amount", 0))
+                decimals = int(token["balance"].get("decimals", 0) or 0)
+                amt = amount_raw / (10 ** decimals) if decimals else float(amount_raw)
+            except:
                 amt = 0.0
         else:
             try:
-                amt = float(token.get("balance") or token.get("amount") or token.get("value") or 0)
-            except Exception:
+                amt = float(token.get("balance") or token.get("amount") or 0)
+            except:
                 amt = 0.0
         balances[sym] = round(amt, 9)
-
     return balances
 
-def format_tx_simple(tx: Dict[str, Any], watched_wallet: str) -> str:
+# -------------------- Формат транзакции --------------------
+def format_tx_simple(tx: Dict[str, Any], wallet: str) -> str:
     tx_hash = tx.get("hash") or tx.get("id") or ""
     in_msg = tx.get("in_msg", {})
-    out_msgs = tx.get("out_msgs", []) or tx.get("out_msg", []) or []
-    incoming_flag = tx.get("incoming")
+    out_msgs = tx.get("out_msgs", []) or tx.get("out_msg", [])
+    token_name = "TON"
+    amount = None
 
-    # from/to
-    from_addr = in_msg.get("source") or tx.get("from")
-    to_addr = in_msg.get("destination") or tx.get("to")
-    if not to_addr and out_msgs:
-        to_addr = out_msgs[0].get("destination")
-
-    # direction
-    direction = "Неизвестно"
-    if watched_wallet and to_addr and watched_wallet.lower() == to_addr.lower():
-        direction = "Приход"
-    elif watched_wallet and from_addr and watched_wallet.lower() == from_addr.lower():
-        direction = "Отправка"
-    elif incoming_flag is True:
-        direction = "Приход"
-    elif incoming_flag is False:
-        direction = "Отправка"
-
-    # amount и токены
-    if "token_balances" in tx and isinstance(tx["token_balances"], list) and tx["token_balances"]:
-        parts_token = []
-        for tok in tx["token_balances"]:
-            token_name = tok.get("symbol") or tok.get("name") or "TOKEN"
-            try:
-                amt = int(tok.get("balance", 0)) / (10 ** int(tok.get("decimals", 0)))
-            except Exception:
-                amt = float(tok.get("balance", 0) or 0)
-            parts_token.append(f"{token_name}: {amt}")
-        amount_str = ", ".join(parts_token)
+    if "token_balances" in tx and tx["token_balances"]:
+        tok = tx["token_balances"][0]
+        token_name = tok.get("symbol") or tok.get("name") or token_name
+        try:
+            amount = int(tok.get("balance", 0)) / (10 ** int(tok.get("decimals", 0)))
+        except:
+            amount = 0.0
     else:
         try:
-            if in_msg and in_msg.get("value"):
-                amount_str = str(int(in_msg.get("value")) / 1e9)
+            if in_msg.get("value"):
+                amount = int(in_msg.get("value", 0)) / 1e9
             elif out_msgs and out_msgs[0].get("value"):
-                amount_str = str(int(out_msgs[0].get("value")) / 1e9)
-            else:
-                amount_str = "—"
-        except Exception:
-            amount_str = "—"
+                amount = int(out_msgs[0].get("value", 0)) / 1e9
+            elif tx.get("amount") is not None:
+                amount = float(tx.get("amount"))
+        except:
+            amount = None
 
-    parts = [
-        f"Хэш: `{tx_hash}`",
-        f"Тип: {direction}",
-        f"От: `{from_addr or '—'}`",
-        f"Кому: `{to_addr or '—'}`",
-        f"Валюта: {amount_str}",
-        f"Количество: {amount_str}"
-    ]
-    return "\n".join(parts)
+    from_addr = in_msg.get("source") or tx.get("from")
+    to_addr = in_msg.get("destination") or tx.get("to") or (out_msgs[0].get("destination") if out_msgs else None)
+
+    direction = "Неизвестно"
+    if wallet and to_addr and wallet.lower() == to_addr.lower():
+        direction = "Приход"
+    elif wallet and from_addr and wallet.lower() == from_addr.lower():
+        direction = "Отправка"
+
+    amount_str = str(amount) if amount is not None else "—"
+
+    return f"Хэш: `{tx_hash}`\nТип: {direction}\nОт: `{from_addr or '—'}`\nКому: `{to_addr or '—'}`\nВалюта: {token_name}\nКоличество: {amount_str}"
 
 # -------------------- Мониторинг --------------------
 async def monitor_all_wallets():
     await asyncio.sleep(2)
     while True:
-        user_ids = list(users_wallets.keys())
-        for user_id in user_ids:
-            wallet = users_wallets.get(user_id)
+        for user_id, wallet in users_wallets.items():
             if not wallet:
                 continue
             txs = await tonapi_get_transactions(wallet, limit=10)
             if not txs:
                 continue
-
             seen = users_seen_txs.setdefault(user_id, set())
             history = users_history.setdefault(user_id, [])
 
@@ -183,20 +157,17 @@ async def monitor_all_wallets():
                 if users_notify.get(user_id, True):
                     try:
                         await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
-                    except Exception:
+                    except:
                         pass
         await asyncio.sleep(CHECK_INTERVAL)
 
-# -------------------- Хендлеры --------------------
+# -------------------- Команды --------------------
 @dp.message(F.text == "/start")
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     users_notify.setdefault(user_id, True)
     await message.answer(
-        "Бот запущен. Установите кошелек: /setwallet <адрес>\n"
-        "Команды:\n"
-        "/setwallet <адрес> — установить/изменить адрес кошелька\n"
-        "Кнопки: Баланс, История, Вкл/Выкл уведомления",
+        "Бот запущен. Установите кошелек: /setwallet <адрес>\nКоманды:\n/setwallet <адрес> — установить/изменить адрес кошелька\nКнопки: Баланс, История, Вкл/Выкл уведомления",
         reply_markup=main_keyboard()
     )
 
@@ -214,7 +185,7 @@ async def cmd_setwallet(message: types.Message):
     users_notify.setdefault(user_id, True)
     await message.answer(f"Адрес кошелька установлен: `{wallet}`", parse_mode="Markdown")
 
-# -------------------- Inline callbacks --------------------
+# -------------------- Callback --------------------
 @dp.callback_query(F.data == "balance")
 async def cb_balance(call: types.CallbackQuery):
     user_id = call.from_user.id
@@ -228,8 +199,7 @@ async def cb_balance(call: types.CallbackQuery):
         return
     balances = parse_account_balances(account)
     lines = [f"{k}: {v}" for k, v in balances.items()]
-    text = "💰 Баланс кошелька:\n" + "\n".join(lines)
-    await call.message.answer(text)
+    await call.message.answer("💰 Баланс кошелька:\n" + "\n".join(lines))
 
 @dp.callback_query(F.data == "history")
 async def cb_history(call: types.CallbackQuery):
@@ -244,7 +214,8 @@ async def cb_history(call: types.CallbackQuery):
 @dp.callback_query(F.data == "toggle_notify")
 async def cb_toggle(call: types.CallbackQuery):
     user_id = call.from_user.id
-    users_notify[user_id] = not users_notify.get(user_id, True)
+    current = users_notify.get(user_id, True)
+    users_notify[user_id] = not current
     state = "включены" if users_notify[user_id] else "выключены"
     await call.message.answer(f"Уведомления {state}.")
 
