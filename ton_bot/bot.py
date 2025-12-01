@@ -2,7 +2,7 @@
 import os
 import asyncio
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -18,8 +18,8 @@ dp = Dispatcher()
 
 TONAPI_HEADERS = {"Authorization": f"Bearer {config.TON_API_KEY}"}
 TONAPI_BASE = "https://tonapi.io/v2/accounts"
+
 CHECK_INTERVAL = 10  # сек — интервал проверки транзакций
-MIN_TX_AMOUNT = 0.000000001  # фильтр маленьких транзакций
 
 # -------------------- Хранилище --------------------
 users_wallets: Dict[int, str] = {}
@@ -29,7 +29,7 @@ users_history: Dict[int, List[str]] = {}
 
 # -------------------- UI --------------------
 def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="💰 Баланс", callback_data="balance"),
             InlineKeyboardButton(text="📜 История", callback_data="history")
@@ -38,25 +38,28 @@ def main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔔 Вкл/Выкл уведомления", callback_data="toggle_notify")
         ]
     ])
+    return kb
 
 # -------------------- TON API --------------------
 def _tonapi_get_account(wallet: str) -> Dict[str, Any]:
-    r = requests.get(f"{TONAPI_BASE}/{wallet}", headers=TONAPI_HEADERS, timeout=10)
+    url = f"{TONAPI_BASE}/{wallet}"
+    r = requests.get(url, headers=TONAPI_HEADERS, timeout=10)
     r.raise_for_status()
     return r.json()
 
 def _tonapi_get_transactions(wallet: str, limit: int = 20) -> List[Dict[str, Any]]:
-    r = requests.get(f"{TONAPI_BASE}/{wallet}/transactions?limit={limit}", headers=TONAPI_HEADERS, timeout=10)
+    url = f"{TONAPI_BASE}/{wallet}/transactions?limit={limit}"
+    r = requests.get(url, headers=TONAPI_HEADERS, timeout=10)
     r.raise_for_status()
     return r.json().get("transactions", [])
 
-async def tonapi_get_account(wallet: str):
+async def tonapi_get_account(wallet: str) -> Optional[Dict[str, Any]]:
     try:
         return await asyncio.to_thread(_tonapi_get_account, wallet)
     except Exception:
         return None
 
-async def tonapi_get_transactions(wallet: str, limit: int = 20):
+async def tonapi_get_transactions(wallet: str, limit: int = 20) -> List[Dict[str, Any]]:
     try:
         return await asyncio.to_thread(_tonapi_get_transactions, wallet, limit)
     except Exception:
@@ -64,70 +67,71 @@ async def tonapi_get_transactions(wallet: str, limit: int = 20):
 
 # -------------------- Баланс --------------------
 def parse_account_balances(account_json: Dict[str, Any]) -> Dict[str, float]:
+    balances: Dict[str, float] = {}
     ton_balance = 0.0
-    try:
-        ton_balance = float(account_json.get("balance", 0))
-        if ton_balance > 1e6:
-            ton_balance /= 1e9
-    except:
-        pass
-    return {"TON": round(ton_balance, 9)}
+    if "balance" in account_json:
+        try:
+            ton_balance = float(account_json.get("balance", 0))
+            if ton_balance > 1e6:
+                ton_balance /= 1e9
+        except Exception:
+            ton_balance = 0.0
+    balances["TON"] = round(ton_balance, 9)
+    return balances
 
-# -------------------- Форматирование транзакции --------------------
-def format_tx(tx: Dict[str, Any], wallet: str) -> str:
-    tx_hash = tx.get("hash") or tx.get("id") or "—"
+# -------------------- Формат транзакции --------------------
+def format_tx_simple(tx: Dict[str, Any], watched_wallet: str) -> str:
+    tx_hash = tx.get("hash") or tx.get("id") or ""
     in_msg = tx.get("in_msg", {})
-    out_msgs = tx.get("out_msgs", []) or tx.get("out_msg", [])
+    out_msgs = tx.get("out_msgs", []) or tx.get("out_msg", []) or []
     incoming_flag = tx.get("incoming")
-
+    token_name = "TON"
     amount = None
     try:
-        if in_msg.get("value"):
+        if in_msg and in_msg.get("value"):
             amount = int(in_msg.get("value", 0)) / 1e9
         elif out_msgs and out_msgs[0].get("value"):
             amount = int(out_msgs[0].get("value", 0)) / 1e9
         elif tx.get("amount") is not None:
             amount = float(tx.get("amount"))
-    except:
+    except Exception:
         amount = None
 
-    if amount is None or amount < MIN_TX_AMOUNT:
-        return ""
+    from_addr = in_msg.get("source") or tx.get("from") or None
+    to_addr = in_msg.get("destination") or tx.get("to") or (out_msgs[0].get("destination") if out_msgs else None)
 
-    from_addr = in_msg.get("source") or tx.get("from") or "—"
-    to_addr = in_msg.get("destination") or tx.get("to") or (out_msgs[0].get("destination") if out_msgs else "—")
+    direction = "Неизвестно"
+    if watched_wallet and to_addr and watched_wallet.lower() == to_addr.lower():
+        direction = "Приход"
+    elif watched_wallet and from_addr and watched_wallet.lower() == from_addr.lower():
+        direction = "Отправка"
+    elif incoming_flag is True:
+        direction = "Приход"
+    elif incoming_flag is False:
+        direction = "Отправка"
 
-    # Покупка/Продажа
-    is_trade = bool(tx.get("token_balances") or tx.get("jetton_transfers"))
+    amount_str = str(amount) if amount is not None else "—"
+    parts = [
+        f"Хэш: `{tx_hash}`",
+        f"Тип: {direction}",
+        f"От: `{from_addr or '—'}`",
+        f"Кому: `{to_addr or '—'}`",
+        f"Валюта: {token_name}",
+        f"Количество: {amount_str}"
+    ]
+    return "\n".join(parts)
 
-    if is_trade:
-        direction = "Покупка/Продажа 🛒"
-        emoji = "🟡"
-    elif wallet.lower() == to_addr.lower():
-        direction = "Приход 💰"
-        emoji = "🟢⬆️"
-    else:
-        direction = "Отправка 💸"
-        emoji = "🔴⬇️"
-
-    text = (
-        f"{emoji} *{direction}*\n"
-        f"Хэш: `{tx_hash}`\n"
-        f"От: `{from_addr}`\n"
-        f"Кому: `{to_addr}`\n"
-        f"Валюта: TON\n"
-        f"Количество: {round(amount, 9)}"
-    )
-    return text
-
-# -------------------- Мониторинг --------------------
+# -------------------- Фоновый мониторинг --------------------
 async def monitor_all_wallets():
     await asyncio.sleep(2)
     while True:
-        for user_id, wallet in list(users_wallets.items()):
+        for user_id, wallet in users_wallets.items():
+            if not wallet:
+                continue
             txs = await tonapi_get_transactions(wallet, limit=10)
             if not txs:
                 continue
+
             seen = users_seen_txs.setdefault(user_id, set())
             history = users_history.setdefault(user_id, [])
 
@@ -136,16 +140,16 @@ async def monitor_all_wallets():
                 if not tx_hash or tx_hash in seen:
                     continue
                 seen.add(tx_hash)
-                text = format_tx(tx, wallet)
-                if not text:
-                    continue
+
+                text = "💥 *Новая транзакция*\n" + format_tx_simple(tx, wallet)
                 history.append(text)
                 if len(history) > 100:
                     history.pop(0)
+
                 if users_notify.get(user_id, True):
                     try:
                         await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown")
-                    except:
+                    except Exception:
                         pass
         await asyncio.sleep(CHECK_INTERVAL)
 
@@ -189,7 +193,8 @@ async def cb_balance(call: types.CallbackQuery):
         await call.message.answer("Не удалось получить данные кошелька.")
         return
     balances = parse_account_balances(account)
-    text = "💰 Баланс кошелька:\n" + "\n".join(f"{k}: {v}" for k,v in balances.items())
+    lines = [f"{k}: {v}" for k, v in balances.items()]
+    text = "💰 Баланс кошелька:\n" + "\n".join(lines)
     await call.message.answer(text)
 
 @dp.callback_query(F.data == "history")
