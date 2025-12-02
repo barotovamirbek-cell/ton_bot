@@ -1,7 +1,7 @@
 import json
 import asyncio
 import requests
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -31,9 +31,9 @@ def save_db(db):
 @dp.message(Command("start"))
 async def start(msg: Message):
     await msg.answer(
-        "👋 Бот для уведомлений TON.\n\n"
+        "👋 Бот TON уведомлений.\n\n"
         "/setwallet <адрес> — установить кошелёк\n"
-        "/mywallet — показать текущий\n"
+        "/mywallet — текущий кошелёк\n"
         "/history — последние транзакции\n"
     )
 
@@ -87,18 +87,28 @@ async def history(msg: Message):
         if "result" not in r or len(r["result"]) == 0:
             return await msg.answer("📭 История пуста")
 
-        text = f"📜 *Последние 10 транзакций:*\n`{wallet}`\n\n"
+        text = f"📜 *Последние 10 транзакций*\n`{wallet}`\n\n"
 
         for tx in r["result"]:
             tx_hash = tx["transaction_id"]["hash"]
-            value = int(tx["in_msg"]["value"]) / 1e9 if tx["in_msg"]["value"] else 0
-            from_addr = tx["in_msg"]["source"] if tx["in_msg"]["source"] else "unknown"
 
-            text += (
-                f"💠 {value} TON\n"
-                f"↪ from `{from_addr}`\n"
-                f"🆔 `{tx_hash}`\n\n"
-            )
+            in_msg = tx.get("in_msg", {})
+            out_msgs = tx.get("out_msgs", [])
+
+            # входящая транзакция?
+            if in_msg and in_msg.get("value") and int(in_msg["value"]) > 0:
+                value = int(in_msg["value"]) / 1e9
+                src = in_msg.get("source", "unknown")
+                tx_type = "IN"
+                text += f"🟢 *IN*  +{value} TON\n↪ from `{src}`\n🆔 `{tx_hash}`\n\n"
+
+            # исходящие?
+            for out in out_msgs:
+                if out.get("value") and int(out["value"]) > 0:
+                    value = int(out["value"]) / 1e9
+                    dst = out.get("destination", "unknown")
+                    tx_type = "OUT"
+                    text += f"🔴 *OUT*  -{value} TON\n↪ to `{dst}`\n🆔 `{tx_hash}`\n\n"
 
         await msg.answer(text, parse_mode="Markdown")
 
@@ -132,28 +142,49 @@ async def check_transactions():
                 tx = r["result"][0]
                 tx_hash = tx["transaction_id"]["hash"]
 
-                # Новая транзакция
+                # Новая транзакция?
                 if tx_hash != last_tx:
-                    amount = int(tx["in_msg"]["value"]) / 1e9
-                    from_addr = tx["in_msg"].get("source", "unknown")
 
-                    text = (
-                        "💎 *Новый перевод TON!*\n\n"
-                        f"👤 От: `{from_addr}`\n"
-                        f"💰 Сумма: *{amount} TON*\n"
-                        f"📬 На: `{wallet}`"
+                    in_msg = tx.get("in_msg", {})
+                    out_msgs = tx.get("out_msgs", [])
+
+                    msg_text = f"💎 *Новая транзакция TON!*\n\n"
+
+                    # входящая?
+                    if in_msg and in_msg.get("value"):
+                        value = int(in_msg["value"]) / 1e9
+                        src = in_msg.get("source", "unknown")
+                        msg_text += (
+                            f"🟢 *Тип:* IN (входящая)\n"
+                            f"👤 От: `{src}`\n"
+                            f"💰 Сумма: +{value} TON\n\n"
+                        )
+
+                    # исходящие?
+                    for out in out_msgs:
+                        if out.get("value"):
+                            value = int(out["value"]) / 1e9
+                            dst = out.get("destination", "unknown")
+                            msg_text += (
+                                f"🔴 *Тип:* OUT (исходящая)\n"
+                                f"➡ Кому: `{dst}`\n"
+                                f"💸 Сумма: -{value} TON\n\n"
+                            )
+
+                    msg_text += (
+                        f"📬 Кошелёк: `{wallet}`\n"
+                        f"🆔 `{tx_hash}`"
                     )
 
-                    await bot.send_message(user_id, text, parse_mode="Markdown")
+                    await bot.send_message(user_id, msg_text, parse_mode="Markdown")
 
-                    # Обновляем последнюю транзакцию
                     db[user_id]["last_tx"] = tx_hash
                     save_db(db)
 
             except Exception as e:
                 print("MONITORING ERROR:", e)
 
-        await asyncio.sleep(10)  # интервал проверки
+        await asyncio.sleep(10)
 
 
 # -------------------- Старт бота --------------------
