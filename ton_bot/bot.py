@@ -1,218 +1,166 @@
-# bot.py
-import os
+import json
 import asyncio
 import requests
-from typing import Dict, Any, List, Optional
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Message
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import config
 
-# -------------------- Настройки --------------------
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("Переменная окружения BOT_TOKEN не задана")
-
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(config.BOT_TOKEN)
 dp = Dispatcher()
 
-TONAPI_HEADERS = {"Authorization": f"Bearer {config.TON_API_KEY}"}
-TONAPI_BASE = "https://tonapi.io/v2/accounts"
+DB_FILE = "db.json"
 
-CHECK_INTERVAL = 10  # интервал проверки
 
-# -------------------- Хранилище --------------------
-users_wallets: Dict[int, str] = {}
-users_notify: Dict[int, bool] = {}
-users_seen_txs: Dict[int, set] = {}
-users_history: Dict[int, List[str]] = {}
-
-# -------------------- UI --------------------
-def main_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💰 Баланс", callback_data="balance")],
-            [InlineKeyboardButton(text="📜 История", callback_data="history")],
-            [InlineKeyboardButton(text="🔔 Вкл/Выкл уведомления", callback_data="toggle_notify")]
-        ]
-    )
-
-# -------------------- TonAPI --------------------
-def safe_json(response: requests.Response) -> Optional[dict]:
-    """TonAPI иногда возвращает мусор — безопасный разбор."""
+# -------------------- DB --------------------
+def load_db():
     try:
-        return response.json()
-    except Exception:
-        print("TonAPI вернул мусор:", response.text[:200])
-        return None
-
-def _get_account(wallet: str) -> Optional[dict]:
-    url = f"{TONAPI_BASE}/{wallet}"
-    try:
-        r = requests.get(url, headers=TONAPI_HEADERS, timeout=10)
-        return safe_json(r)
-    except Exception as e:
-        print("Ошибка запроса:", e)
-        return None
-
-def _get_transactions(wallet: str) -> List[dict]:
-    url = f"{TONAPI_BASE}/{wallet}/transactions?limit=100"
-    try:
-        r = requests.get(url, headers=TONAPI_HEADERS, timeout=10)
-    except Exception as e:
-        print("Сеть упала:", e)
-        return []
-
-    data = safe_json(r)
-    if not data or "transactions" not in data:
-        return []
-
-    return data["transactions"]
-
-async def get_account(wallet: str):
-    return await asyncio.to_thread(_get_account, wallet)
-
-async def get_transactions(wallet: str):
-    return await asyncio.to_thread(_get_transactions, wallet)
-
-# -------------------- Баланс --------------------
-def parse_balance(account_json: Dict[str, Any]) -> float:
-    if not account_json:
-        return 0.0
-
-    try:
-        bal = float(account_json.get("balance", 0))
-        return round(bal / 1e9, 6)
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
     except:
-        return 0.0
+        return {}
 
-# -------------------- Транзакции --------------------
-def format_tx(tx: Dict[str, Any], wallet: str) -> str:
-    tx_hash = tx.get("hash", "—")
-    from_addr = tx.get("from", "—")
-    to_addr = tx.get("to", "—")
 
-    incoming = wallet.lower() == (to_addr or "").lower()
-    outgoing = wallet.lower() == (from_addr or "").lower()
+def save_db(db):
+    with open(DB_FILE, "w") as f:
+        json.dump(db, f, indent=4)
 
-    amount = 0
-    if incoming:
-        amount = int(tx.get("in_msg", {}).get("value", 0)) / 1e9
-    elif outgoing:
-        msgs = tx.get("out_msgs", [])
-        if msgs:
-            amount = int(msgs[0].get("value", 0)) / 1e9
 
-    direction = "Покупка" if incoming else "Продажа" if outgoing else "Перевод"
-
-    return (
-        f"💥 *Новая транзакция*\n"
-        f"Хэш: `{tx_hash}`\n"
-        f"Тип: {direction}\n"
-        f"От: `{from_addr}`\n"
-        f"Кому: `{to_addr}`\n"
-        f"TON: {amount}"
+# -------------------- Команды --------------------
+@dp.message(Command("start"))
+async def start(msg: Message):
+    await msg.answer(
+        "👋 Бот для уведомлений TON.\n\n"
+        "/setwallet <адрес> — установить кошелёк\n"
+        "/mywallet — показать текущий\n"
+        "/history — последние транзакции\n"
     )
 
-# -------------------- Мониторинг --------------------
-async def monitor():
-    await asyncio.sleep(2)
-    while True:
-        for user_id, wallet in users_wallets.items():
 
-            txs = await get_transactions(wallet)
-            if not txs:
-                continue
-
-            seen = users_seen_txs.setdefault(user_id, set())
-            history = users_history.setdefault(user_id, [])
-
-            for tx in reversed(txs):
-                tx_hash = tx.get("hash")
-                if not tx_hash or tx_hash in seen:
-                    continue
-
-                seen.add(tx_hash)
-                msg = format_tx(tx, wallet)
-                history.append(msg)
-
-                if len(history) > 100:
-                    history.pop(0)
-
-                if users_notify.get(user_id, True):
-                    try:
-                        await bot.send_message(user_id, msg, parse_mode="Markdown")
-                    except:
-                        pass
-
-        await asyncio.sleep(CHECK_INTERVAL)
-
-# -------------------- Хендлеры --------------------
-@dp.message(F.text == "/start")
-async def cmd_start(message: types.Message):
-    uid = message.from_user.id
-    users_notify.setdefault(uid, True)
-    await message.answer(
-        "Бот запущен.\n"
-        "Установите кошелек: /setwallet <адрес>\n",
-        reply_markup=main_keyboard()
-    )
-
-@dp.message(F.text.startswith("/setwallet"))
-async def cmd_setwallet(message: types.Message):
-    uid = message.from_user.id
-    parts = message.text.split(maxsplit=1)
-
+@dp.message(Command("setwallet"))
+async def setwallet(msg: Message):
+    parts = msg.text.split()
     if len(parts) < 2:
-        await message.answer("Использование: /setwallet <адрес>")
-        return
+        return await msg.answer("❗ Укажи кошелёк: /setwallet EQxxxx")
 
     wallet = parts[1].strip()
+    user_id = str(msg.from_user.id)
 
-    users_wallets[uid] = wallet
-    users_seen_txs[uid] = set()
-    users_history[uid] = []
+    db = load_db()
+    db[user_id] = {"wallet": wallet, "last_tx": ""}
+    save_db(db)
 
-    await message.answer(f"Кошелёк установлен: `{wallet}`", parse_mode="Markdown")
+    await msg.answer(f"✔ Кошелёк установлен:\n`{wallet}`", parse_mode="Markdown")
 
-@dp.callback_query(F.data == "balance")
-async def cb_balance(call: types.CallbackQuery):
-    uid = call.from_user.id
-    w = users_wallets.get(uid)
 
-    if not w:
-        return await call.message.answer("Сначала укажите /setwallet")
+@dp.message(Command("mywallet"))
+async def mywallet(msg: Message):
+    user_id = str(msg.from_user.id)
+    db = load_db()
 
-    acc = await get_account(w)
-    bal = parse_balance(acc)
+    if user_id not in db:
+        return await msg.answer("❗ Кошелёк не установлен")
 
-    await call.message.answer(f"💰 Баланс: {bal} TON")
+    await msg.answer(f"Твой кошелёк:\n`{db[user_id]['wallet']}`", parse_mode="Markdown")
 
-@dp.callback_query(F.data == "history")
-async def cb_history(call: types.CallbackQuery):
-    uid = call.from_user.id
-    h = users_history.get(uid, [])
 
-    if not h:
-        return await call.message.answer("История пуста.")
+# -------------------- /history --------------------
+@dp.message(Command("history"))
+async def history(msg: Message):
+    user_id = str(msg.from_user.id)
+    db = load_db()
 
-    for m in h[-10:]:
-        await call.message.answer(m, parse_mode="Markdown")
+    if user_id not in db:
+        return await msg.answer("❗ Сначала установи кошелёк: /setwallet")
 
-@dp.callback_query(F.data == "toggle_notify")
-async def cb_toggle(call: types.CallbackQuery):
-    uid = call.from_user.id
-    cur = users_notify.get(uid, True)
-    users_notify[uid] = not cur
+    wallet = db[user_id]["wallet"]
 
-    await call.message.answer(
-        f"Уведомления {'включены' if users_notify[uid] else 'выключены'}"
-    )
+    try:
+        params = {
+            "address": wallet,
+            "limit": 10,
+            "api_key": config.TONCENTER_KEY
+        }
+        r = requests.get(config.TONCENTER_API, params=params).json()
 
-# -------------------- Запуск --------------------
+        if "result" not in r or len(r["result"]) == 0:
+            return await msg.answer("📭 История пуста")
+
+        text = f"📜 *Последние 10 транзакций:*\n`{wallet}`\n\n"
+
+        for tx in r["result"]:
+            tx_hash = tx["transaction_id"]["hash"]
+            value = int(tx["in_msg"]["value"]) / 1e9 if tx["in_msg"]["value"] else 0
+            from_addr = tx["in_msg"]["source"] if tx["in_msg"]["source"] else "unknown"
+
+            text += (
+                f"💠 {value} TON\n"
+                f"↪ from `{from_addr}`\n"
+                f"🆔 `{tx_hash}`\n\n"
+            )
+
+        await msg.answer(text, parse_mode="Markdown")
+
+    except Exception as e:
+        await msg.answer("❗ Ошибка при загрузке истории")
+        print("HISTORY ERROR:", e)
+
+
+# -------------------- Мониторинг TON --------------------
+async def check_transactions():
+    print("TON мониторинг запущен...")
+
+    while True:
+        db = load_db()
+
+        for user_id, data in db.items():
+            wallet = data["wallet"]
+            last_tx = data.get("last_tx", "")
+
+            try:
+                params = {
+                    "address": wallet,
+                    "limit": 1,
+                    "api_key": config.TONCENTER_KEY
+                }
+                r = requests.get(config.TONCENTER_API, params=params).json()
+
+                if "result" not in r or len(r["result"]) == 0:
+                    continue
+
+                tx = r["result"][0]
+                tx_hash = tx["transaction_id"]["hash"]
+
+                # Новая транзакция
+                if tx_hash != last_tx:
+                    amount = int(tx["in_msg"]["value"]) / 1e9
+                    from_addr = tx["in_msg"].get("source", "unknown")
+
+                    text = (
+                        "💎 *Новый перевод TON!*\n\n"
+                        f"👤 От: `{from_addr}`\n"
+                        f"💰 Сумма: *{amount} TON*\n"
+                        f"📬 На: `{wallet}`"
+                    )
+
+                    await bot.send_message(user_id, text, parse_mode="Markdown")
+
+                    # Обновляем последнюю транзакцию
+                    db[user_id]["last_tx"] = tx_hash
+                    save_db(db)
+
+            except Exception as e:
+                print("MONITORING ERROR:", e)
+
+        await asyncio.sleep(10)  # интервал проверки
+
+
+# -------------------- Старт бота --------------------
 async def main():
-    asyncio.create_task(monitor())
+    asyncio.create_task(check_transactions())
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
