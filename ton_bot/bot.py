@@ -9,7 +9,7 @@ import config
 
 bot = Bot(
     token=config.BOT_TOKEN,
-    timeout=30,     # увеличенный таймаут
+    timeout=30,
 )
 
 dp = Dispatcher()
@@ -29,6 +29,17 @@ def load_db():
 def save_db(db):
     with open(DB_FILE, "w") as f:
         json.dump(db, f, indent=4)
+
+
+# -------------------- SAFE SEND --------------------
+async def safe_send(chat_id, text):
+    try:
+        await bot.send_message(chat_id, text, parse_mode="Markdown")
+    except Exception as e:
+        err = str(e).lower()
+        if "blocked" in err or "user is deactivated" in err:
+            return  # тихо игнорируем
+        print("SEND ERROR:", e)
 
 
 # -------------------- Команды --------------------
@@ -86,7 +97,7 @@ async def history(msg: Message):
             "limit": 10,
             "api_key": config.TONCENTER_KEY
         }
-        r = requests.get(config.TONCENTER_API, params=params).json()
+        r = requests.get(config.TONCENTER_API, params=params, timeout=20).json()
 
         if "result" not in r or len(r["result"]) == 0:
             return await msg.answer("📭 История пуста")
@@ -99,26 +110,32 @@ async def history(msg: Message):
             in_msg = tx.get("in_msg", {})
             out_msgs = tx.get("out_msgs", [])
 
-            # входящая транзакция?
+            # входящие
             if in_msg and in_msg.get("value") and int(in_msg["value"]) > 0:
                 value = int(in_msg["value"]) / 1e9
                 src = in_msg.get("source", "unknown")
-                tx_type = "IN"
-                text += f"🟢 *IN*  +{value} TON\n↪ from `{src}`\n🆔 `{tx_hash}`\n\n"
+                text += (
+                    f"🟢 *IN*  +{value} TON\n"
+                    f"↪ from `{src}`\n"
+                    f"🆔 `{tx_hash}`\n\n"
+                )
 
-            # исходящие?
+            # исходящие
             for out in out_msgs:
                 if out.get("value") and int(out["value"]) > 0:
                     value = int(out["value"]) / 1e9
                     dst = out.get("destination", "unknown")
-                    tx_type = "OUT"
-                    text += f"🔴 *OUT*  -{value} TON\n↪ to `{dst}`\n🆔 `{tx_hash}`\n\n"
+                    text += (
+                        f"🔴 *OUT*  -{value} TON\n"
+                        f"↪ to `{dst}`\n"
+                        f"🆔 `{tx_hash}`\n\n"
+                    )
 
         await msg.answer(text, parse_mode="Markdown")
 
     except Exception as e:
-        await msg.answer("❗ Ошибка при загрузке истории")
         print("HISTORY ERROR:", e)
+        await msg.answer("❗ Ошибка при загрузке истории")
 
 
 # -------------------- Мониторинг TON --------------------
@@ -138,15 +155,14 @@ async def check_transactions():
                     "limit": 1,
                     "api_key": config.TONCENTER_KEY
                 }
-                r = requests.get(config.TONCENTER_API, params=params).json()
 
+                r = requests.get(config.TONCENTER_API, params=params, timeout=20).json()
                 if "result" not in r or len(r["result"]) == 0:
                     continue
 
                 tx = r["result"][0]
                 tx_hash = tx["transaction_id"]["hash"]
 
-                # Новая транзакция?
                 if tx_hash != last_tx:
 
                     in_msg = tx.get("in_msg", {})
@@ -154,8 +170,8 @@ async def check_transactions():
 
                     msg_text = f"💎 *Новая транзакция TON!*\n\n"
 
-                    # входящая?
-                    if in_msg and in_msg.get("value"):
+                    # входящие
+                    if in_msg and in_msg.get("value") and int(in_msg["value"]) > 0:
                         value = int(in_msg["value"]) / 1e9
                         src = in_msg.get("source", "unknown")
                         msg_text += (
@@ -164,9 +180,9 @@ async def check_transactions():
                             f"💰 Сумма: +{value} TON\n\n"
                         )
 
-                    # исходящие?
+                    # исходящие
                     for out in out_msgs:
-                        if out.get("value"):
+                        if out.get("value") and int(out["value"]) > 0:
                             value = int(out["value"]) / 1e9
                             dst = out.get("destination", "unknown")
                             msg_text += (
@@ -180,7 +196,7 @@ async def check_transactions():
                         f"🆔 `{tx_hash}`"
                     )
 
-                    await bot.send_message(user_id, msg_text, parse_mode="Markdown")
+                    await safe_send(user_id, msg_text)
 
                     db[user_id]["last_tx"] = tx_hash
                     save_db(db)
@@ -188,7 +204,7 @@ async def check_transactions():
             except Exception as e:
                 print("MONITORING ERROR:", e)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(4)   # оптимальный интервал
 
 
 # -------------------- Старт бота --------------------
